@@ -59,7 +59,7 @@ Il pallino verde sull'icona Impostazioni indica che la sincronizzazione è attiv
 
 Nella sezione **Prestiti** tieni traccia dei debiti (soldi che devi restituire) e dei crediti (soldi che ti devono), con il piano delle rate.
 
-- Per caricare quelli del tuo Excel: **Prestiti → Importa prestiti da file** e scegli . Basta farlo su un dispositivo: arrivano anche sugli altri con la sincronizzazione.
+- Per caricare quelli del tuo Excel: **Prestiti → Importa prestiti da file** e scegli `import/prestiti.json`. Basta farlo su un dispositivo: arrivano anche sugli altri con la sincronizzazione.
 - **✓ Pagata** sulla scheda segna la prossima rata. Nel dettaglio puoi spuntare le singole rate, cambiare date e importi, aggiungere rate e segnare in un colpo tutte quelle scadute.
 - Se attivi **Registra le rate tra le spese**, ogni rata segnata crea anche un movimento (categoria *Prestiti & Rate* per i debiti, *Altre entrate* per i crediti). Attenzione a non avere anche una spesa ricorrente per la stessa rata, altrimenti la conti due volte.
 - Il numero rosso sull'icona Prestiti indica le rate scadute non ancora segnate.
