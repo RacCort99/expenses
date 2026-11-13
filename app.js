@@ -460,10 +460,12 @@ function viewBudget() {
 
 function viewSettings() {
   const L = db.local, on = !!L.syncUrl;
-  L.pendingKey ||= randomKey();
+  if (!on) L.pendingKey ||= randomKey();
   const syncCard = on ? `
       <div class="card"><div class="card-head"><h2>Sincronizzazione</h2><span class="sub" id="syncStatus">${syncText()}</span></div>
-        <p class="note" style="margin-top:-6px">Ogni modifica viene salvata da sola su Google Drive e arriva sugli altri dispositivi collegati quando li apri. Ogni giorno resta anche una copia nella cartella <b>Expenses backup</b> del tuo Drive.</p>
+        <div class="totals"><span class="pill">Su Google Drive <b class="num">${L.remoteCount ?? '—'}</b> movimenti</span><span class="pill">Su questo dispositivo <b class="num">${db.transactions.length}</b></span></div>
+        ${syncState.s === 'error' ? `<p class="note bad"><b>Problema:</b> ${esc(syncState.msg)}</p>` : ''}
+        <p class="note">Ogni modifica viene salvata da sola su Google Drive e arriva sugli altri dispositivi collegati quando li apri. Ogni giorno resta anche una copia nella cartella <b>Expenses backup</b> del tuo Drive.</p>
         <div class="stack"><button class="primary" id="syncNow">Sincronizza ora</button><button class="btn" id="copyLink">Copia link per un altro dispositivo</button></div>
         <p class="note">Apri quel link sul telefono (o su un altro PC) e si collega da solo. Mandalo solo a te stesso, per esempio nei "Messaggi salvati" di Telegram: chi ha il link può leggere i tuoi dati.</p>
         <button class="danger" id="unlink">Scollega questo dispositivo</button>
@@ -535,7 +537,7 @@ function importData(d) {
 }
 
 // ---------- Sincronizzazione (Google Drive tramite un Google Apps Script personale) ----------
-let syncing = false, syncQueued = false, syncTimer = null, syncState = { s: 'off', msg: '' }, pendingRender = false;
+let syncQueued = false, syncTimer = null, syncState = { s: 'off', msg: '' }, pendingRender = false;
 function randomKey() { const a = new Uint8Array(24); crypto.getRandomValues(a); return b64enc(String.fromCharCode(...a)); }
 function b64enc(s) { return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function b64dec(s) { return decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/')))); }
@@ -555,7 +557,7 @@ async function call(body) {
   let r;
   try { r = await fetch(db.local.syncUrl, { method: 'POST', body: JSON.stringify({ ...body, key: db.local.syncKey }) }); }
   catch { throw new Error(navigator.onLine ? 'Google Drive non raggiungibile' : 'sei offline, riprovo dopo'); }
-  let j; try { j = await r.json(); } catch { throw new Error('risposta non valida: nel deployment "Chi ha accesso" deve essere "Chiunque"'); }
+  let j; try { j = await r.json(); } catch { throw new Error('Google ha risposto con un errore. Controlla che il deployment sia "App web" con accesso "Chiunque" e di aver autorizzato lo script.'); }
   if (j.error) throw new Error(j.error === 'unauthorized' ? 'chiave di sincronizzazione non valida' : j.error);
   return j;
 }
@@ -589,10 +591,16 @@ function mergeData(a, b) {
     stamps: { budgets: Math.max(sa.budgets || 0, sb.budgets || 0), incomeTarget: Math.max(sa.incomeTarget || 0, sb.incomeTarget || 0) },
   };
 }
-async function sync() {
-  if (!db.local.syncUrl) return;
-  if (syncing) { syncQueued = true; return; }
-  clearTimeout(syncTimer); syncing = true; setSync('busy');
+let syncRun = null;
+/** Avvia una sincronizzazione (o restituisce quella già in corso). Risolve con { ok, error } */
+function sync() {
+  if (!db.local.syncUrl) return Promise.resolve({ ok: false, error: 'non collegato' });
+  if (syncRun) { syncQueued = true; return syncRun; }
+  syncRun = doSync().finally(() => { syncRun = null; if (syncQueued) { syncQueued = false; scheduleSync(300); } });
+  return syncRun;
+}
+async function doSync() {
+  clearTimeout(syncTimer); setSync('busy');
   try {
     let changed = false;
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -602,25 +610,30 @@ async function sync() {
       if (JSON.stringify(payload(db)) !== before) { changed = true; runRecurring(true); }
       persist();
       const out = payload(db);
-      if (r.data && JSON.stringify(out) === JSON.stringify(payload(r.data))) break; // Drive è già aggiornato
+      if (r.data && JSON.stringify(out) === JSON.stringify(payload(r.data))) { db.local.remoteCount = out.transactions.length; break; } // Drive è già aggiornato
       const p = await call({ action: 'put', base: r.updated || 0, data: out });
-      if (!p.conflict) break; // altrimenti un altro dispositivo ha salvato nel frattempo: riunisco e riprovo
+      if (!p.conflict) { db.local.remoteCount = out.transactions.length; break; } // altrimenti un altro dispositivo ha salvato nel frattempo: riunisco e riprovo
     }
     db.local.lastSync = Date.now(); persist(); setSync('ok');
-    if (changed) { if ($('#txDialog').open) pendingRender = true; else render(); }
-  } catch (e) { setSync('error', e.message); }
-  finally { syncing = false; if (syncQueued) { syncQueued = false; scheduleSync(300); } }
+    if (changed || ui.view === 'settings') { if ($('#txDialog').open) pendingRender = true; else render(); }
+    return { ok: true };
+  } catch (e) {
+    setSync('error', e.message);
+    if (ui.view === 'settings' && !$('#txDialog').open) render();
+    return { ok: false, error: e.message };
+  }
 }
 async function connect(url, key) {
   url = (url || '').trim();
   if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) return toast("L'indirizzo deve iniziare con https://script.google.com/");
   const prev = { ...db.local };
   Object.assign(db.local, { syncUrl: url, syncKey: key }); delete db.local.lastSync;
-  try { setSync('busy'); await call({ action: 'get' }); }
+  try { setSync('busy'); await call({ action: 'get' }); toast('Collegamento in corso…'); }
   catch (e) { db.local = prev; persist(); setSync('off'); toast('Collegamento non riuscito: ' + e.message); return; }
   delete db.local.pendingKey; persist();
-  toast('Collegato a Google Drive ✓');
-  await sync();
+  const res = await sync();
+  if (res.ok) toast(`Collegato ✓ ${db.transactions.length} movimenti su questo dispositivo`);
+  else toast('Collegato, ma la sincronizzazione non è riuscita: ' + res.error);
   if (ui.view === 'settings') viewSettings();
 }
 function readSyncLink() {
@@ -639,6 +652,16 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
+    return handle_(e);
+  } catch (err) {
+    return out_({ error: 'errore nello script Google: ' + err });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handle_(e) {
+  {
     const body = JSON.parse(e.postData.contents);
     if (body.key !== KEY) return out_({ error: 'unauthorized' });
     const props = PropertiesService.getScriptProperties();
@@ -650,15 +673,13 @@ function doPost(e) {
     if (body.action === 'put') {
       if ((body.base || 0) !== updated) return out_({ conflict: true, updated: updated });
       const text = JSON.stringify(body.data);
-      if (file) file.setContent(text); else DriveApp.createFile(FILE, text, 'application/json');
+      if (file) file.setContent(text); else DriveApp.createFile(FILE, text, MimeType.PLAIN_TEXT);
       const now = Date.now();
       props.setProperty('updated', String(now));
       dailyBackup_(text);
       return out_({ ok: true, updated: now });
     }
     return out_({ error: 'azione sconosciuta' });
-  } finally {
-    lock.releaseLock();
   }
 }
 
@@ -675,7 +696,7 @@ function dailyBackup_(text) {
   const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(BACKUP_FOLDER);
   const name = 'expenses-' + Utilities.formatDate(new Date(), 'Europe/Rome', 'yyyy-MM-dd') + '.json';
   const same = folder.getFilesByName(name);
-  if (same.hasNext()) same.next().setContent(text); else folder.createFile(name, text, 'application/json');
+  if (same.hasNext()) same.next().setContent(text); else folder.createFile(name, text, MimeType.PLAIN_TEXT);
   const files = [];
   const all = folder.getFiles();
   while (all.hasNext()) files.push(all.next());
@@ -771,6 +792,7 @@ document.addEventListener('keydown', e => { if (e.key === 'n' && !e.ctrlKey && !
 if (persist()) try { localStorage.removeItem(OLD_KEY); } catch {} // salva subito l'eventuale migrazione
 runRecurring();
 readSyncLink();
+addEventListener('hashchange', () => { if (/sync=/.test(location.hash)) { readSyncLink(); render(); } });
 render();
 setSync(db.local.syncUrl ? 'ok' : 'off');
 if (db.local.syncUrl) sync();
