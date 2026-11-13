@@ -40,9 +40,9 @@ const cat = k => CATS[k] || CATS.other;
 const gcolor = k => GROUPS[cat(k).g].color;
 
 // ---------- Stato ----------
-const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 3;
+const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 4;
 // deleted: id → quando è stato cancellato; stamps: quando sono cambiati budget/entrate; local: impostazioni di questo dispositivo (non sincronizzate)
-const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], settings: {}, deleted: {}, stamps: {}, local: {} });
+const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], loans: [], settings: {}, deleted: {}, stamps: {}, local: {} });
 let db = load();
 const ui = { view: 'home', month: ym(new Date()), q: '', cat: '', listMonth: '', limit: 200 };
 
@@ -95,6 +95,7 @@ function migrate(d) {
     const s = d.settings || {}; delete s.driveClientId; delete s.lastDriveBackup;
     d.settings = s; d.deleted ||= {}; d.stamps ||= {}; d.local ||= {}; d.version = 3;
   }
+  if (d.version < 4) { d.loans ||= []; d.version = 4; }
   return d;
 }
 function migrateV2(d) {
@@ -270,9 +271,10 @@ function short(v) { return v >= 1000 ? (v / 1000).toLocaleString('it-IT', { maxi
 // ---------- Viste ----------
 function render() {
   hideTip();
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.view === ui.view));
-  $('#fab').style.display = ui.view === 'settings' ? 'none' : '';
-  ({ home: viewHome, list: viewList, budget: viewBudget, settings: viewSettings })[ui.view]();
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.view === (ui.view === 'loan' ? 'loans' : ui.view)));
+  $('#fab').style.display = ['home', 'list', 'budget'].includes(ui.view) ? '' : 'none';
+  updateLoanBadge();
+  ({ home: viewHome, list: viewList, budget: viewBudget, loans: viewLoans, loan: viewLoan, settings: viewSettings })[ui.view]();
 }
 const monthNav = () => `<div class="month-nav"><button data-mnav="-1" aria-label="Mese precedente">‹</button><span>${monthLabel(ui.month)}</span><button data-mnav="1" aria-label="Mese successivo">›</button></div>`;
 
@@ -524,14 +526,217 @@ async function copyText(t) {
   try { await navigator.clipboard.writeText(t); toast('Copiato ✓'); } catch { prompt('Copia questo testo:', t); }
 }
 
+// ---------- Prestiti ----------
+// loan: { id, name, kind: 'debt' (paghi tu) | 'credit' (ti devono), total, linkExpense, note, updated,
+//         installments: [{ n, date, amount, paid, doc }] }
+const fmtDate = (d, opt = { day: 'numeric', month: 'short', year: 'numeric' }) => new Date(d + 'T12:00:00').toLocaleDateString('it-IT', opt);
+function loanStats(l) {
+  const inst = [...l.installments].sort((a, b) => a.date.localeCompare(b.date) || a.n - b.n);
+  const paid = inst.filter(i => i.paid).reduce((a, i) => a + i.amount, 0);
+  const now = today();
+  const overdue = inst.filter(i => !i.paid && i.date < now);
+  return {
+    inst, paid, overdue, remaining: Math.max(l.total - paid, 0),
+    pct: l.total ? Math.min(paid / l.total, 1) : 0,
+    next: inst.find(i => !i.paid), last: inst.at(-1),
+    unscheduled: Math.max(l.total - inst.reduce((a, i) => a + i.amount, 0), 0),
+  };
+}
+function updateLoanBadge() {
+  const n = db.loans.filter(l => l.kind === 'debt').reduce((a, l) => a + loanStats(l).overdue.length, 0);
+  const b = $('#loanBadge'); b.textContent = n > 99 ? '99+' : n; b.hidden = !n;
+}
+/** Segna una rata pagata o da pagare; se il prestito è collegato alle spese registra (o toglie) il movimento */
+function setPaid(l, inst, paid) {
+  inst.paid = paid; l.updated = Date.now();
+  const id = `loan-${l.id}-${inst.n}`;
+  if (paid && l.linkExpense) {
+    if (!db.transactions.some(t => t.id === id))
+      db.transactions.push({ id, date: today(), category: l.kind === 'debt' ? 'loans' : 'income', name: l.name, amount: l.kind === 'debt' ? -inst.amount : inst.amount, loanId: l.id, updated: Date.now() });
+  } else if (!paid && db.transactions.some(t => t.id === id)) {
+    db.transactions = db.transactions.filter(t => t.id !== id); db.deleted[id] = Date.now();
+  }
+}
+function makeSchedule(startN, count, amount, firstDate, total) {
+  const out = []; const [y, m, d] = firstDate.split('-').map(Number); let left = total ?? Infinity;
+  for (let i = 0; i < count && left > 0.004; i++) {
+    const dt = new Date(y, m - 1 + i, 1); const last = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+    const date = ym(dt) + '-' + String(Math.min(d, last)).padStart(2, '0');
+    const amt = Math.round(Math.min(amount, left) * 100) / 100; left -= amt;
+    out.push({ n: startN + i, date, amount: amt, paid: false, doc: false });
+  }
+  return out;
+}
+
+function viewLoans() {
+  updateLoanBadge();
+  const st = db.loans.map(l => ({ l, s: loanStats(l) })).sort((a, b) => (a.s.next?.date || '9999').localeCompare(b.s.next?.date || '9999')); // le più urgenti prima
+  const debt = st.filter(x => x.l.kind === 'debt'), credit = st.filter(x => x.l.kind === 'credit');
+  const endMonth = ym(new Date()) + '-31';
+  const dueNow = debt.flatMap(x => x.s.inst.filter(i => !i.paid && i.date <= endMonth)).reduce((a, i) => a + i.amount, 0);
+  const card = ({ l, s }) => {
+    const od = s.overdue.length, isDebt = l.kind === 'debt';
+    return `<div class="card loan" data-loan="${l.id}">
+      <div class="lh"><span class="lname">${esc(l.name)}</span><span class="badge ${isDebt ? 'debt' : 'credit'}">${isDebt ? 'Debito' : 'Credito'}</span></div>
+      <div class="lrem num"><b>${money(s.remaining, true)}</b> <small>${isDebt ? 'da restituire' : 'da ricevere'} su ${money(l.total, true)}</small></div>
+      <div class="lbar"><i style="width:${s.pct * 100}%"></i></div>
+      <div class="lmeta"><span>${Math.round(s.pct * 100)}% ${isDebt ? 'pagato' : 'ricevuto'}</span><span>${s.last ? 'ultima rata ' + fmtDate(s.last.date, { month: 'short', year: 'numeric' }) : 'nessuna rata pianificata'}</span></div>
+      ${s.next ? `<div class="lnext">
+          <span>${od ? `<b class="bad">${od} ${od === 1 ? 'rata scaduta' : 'rate scadute'}</b> · ` : ''}Prossima: <b class="num">${money(s.next.amount)}</b> · ${fmtDate(s.next.date)}</span>
+          <button class="btn sm" data-pay="${l.id}">✓ ${isDebt ? 'Pagata' : 'Ricevuta'}</button></div>` : s.remaining > 0 ? '' : '<div class="lnext"><b class="pos">Chiuso 🎉</b></div>'}
+    </div>`;
+  };
+  $('#main').innerHTML = `
+    <div class="head"><h1>Prestiti</h1></div>
+    ${db.loans.length ? `<div class="kpis">
+      <div class="card"><span>Debiti residui</span><b class="num">${money(debt.reduce((a, x) => a + x.s.remaining, 0), true)}</b></div>
+      <div class="card"><span>Da pagare entro fine mese</span><b class="num ${dueNow ? '' : 'pos'}">${money(dueNow, true)}</b></div>
+      <div class="card"><span>Ti devono ancora</span><b class="num">${money(credit.reduce((a, x) => a + x.s.remaining, 0), true)}</b></div>
+    </div>` : `<div class="card empty"><p>Nessun prestito ancora.</p><p>Aggiungine uno qui sotto oppure importa quelli del tuo Excel.</p></div>`}
+    ${debt.length ? `<h2 class="sec">I tuoi debiti</h2><div class="grid two">${debt.map(card).join('')}</div>` : ''}
+    ${credit.length ? `<h2 class="sec">Ti devono</h2><div class="grid two">${credit.map(card).join('')}</div>` : ''}
+    <div class="grid two section">
+      <div class="card"><div class="card-head"><h2>Nuovo prestito</h2></div>
+        <div class="seg" id="nlKind"><button type="button" data-k="debt" class="on">Devo pagare</button><button type="button" data-k="credit">Mi devono</button></div>
+        <div class="form2">
+          <label class="field">Nome <input id="nlName" placeholder="es. Finanziamento auto"></label>
+          <label class="field">Importo totale € <input id="nlTotal" class="num" inputmode="decimal"></label>
+          <label class="field">Rata mensile € <input id="nlRate" class="num" inputmode="decimal"></label>
+          <label class="field">Prima rata <input id="nlDate" type="date" value="${today()}"></label>
+        </div>
+        <label class="check-row"><input type="checkbox" id="nlLink" checked> Quando segno una rata, registrala anche tra le spese</label>
+        <button class="primary" id="nlAdd">Crea prestito</button>
+      </div>
+      <div class="card"><div class="card-head"><h2>Importa</h2></div>
+        <p class="note">Carica il file <b>prestiti.json</b> (nella cartella <i>import</i>) con i prestiti del tuo Excel. Quelli già presenti non vengono duplicati.</p>
+        <label class="btn" style="cursor:pointer;display:inline-block">Importa prestiti da file<input type="file" id="lImp" accept=".json,application/json" hidden></label>
+      </div>
+    </div>`;
+  let kind = 'debt';
+  document.querySelectorAll('#nlKind button').forEach(b => b.onclick = () => { kind = b.dataset.k; document.querySelectorAll('#nlKind button').forEach(x => x.classList.toggle('on', x === b)); });
+  $('#nlAdd').onclick = () => {
+    const name = $('#nlName').value.trim(), total = parseNum($('#nlTotal').value), rate = parseNum($('#nlRate').value), first = $('#nlDate').value;
+    if (!name || !total || !rate || !first) return toast('Compila nome, totale, rata e data');
+    const l = { id: 'l-' + uid(), name, kind, total, linkExpense: $('#nlLink').checked, updated: Date.now(), installments: makeSchedule(1, Math.ceil(total / rate), rate, first, total) };
+    db.loans.push(l); save(); toast(`Creato: ${l.installments.length} rate`); ui.view = 'loan'; ui.loanId = l.id; render(); scrollTo(0, 0);
+  };
+  $('#lImp').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { importLoans(JSON.parse(await f.text())); } catch (err) { toast('File non valido: ' + err.message); } };
+}
+function importLoans(d) {
+  const list = Array.isArray(d) ? d : d.loans;
+  if (!Array.isArray(list)) throw new Error('nessun prestito nel file');
+  let added = 0;
+  for (const l of list) if (!db.loans.some(x => x.id === l.id)) { db.loans.push({ ...l, updated: Date.now() }); delete db.deleted[l.id]; added++; }
+  save(); toast(added ? `Importati ${added} prestiti` : 'Erano già tutti presenti'); ui.view = 'loans'; render();
+}
+
+function viewLoan() {
+  updateLoanBadge();
+  const l = db.loans.find(x => x.id === ui.loanId);
+  if (!l) { ui.view = 'loans'; return viewLoans(); }
+  const s = loanStats(l), isDebt = l.kind === 'debt', paidWord = isDebt ? 'pagata' : 'ricevuta';
+  const showAll = ui.showPaid;
+  let remaining = l.total;
+  const rows = s.inst.map(i => {
+    remaining -= i.paid ? i.amount : 0;
+    if (i.paid && !showAll) return '';
+    const late = !i.paid && i.date < today();
+    return `<div class="inst ${i.paid ? 'paid' : ''} ${late ? 'late' : ''}" data-n="${i.n}">
+      <label class="tick"><input type="checkbox" data-f="paid" ${i.paid ? 'checked' : ''} aria-label="Rata ${i.n} ${paidWord}"></label>
+      <span class="nr">#${i.n}</span>
+      <input type="date" data-f="date" value="${i.date}" aria-label="Data rata ${i.n}">
+      <input class="num" data-f="amount" inputmode="decimal" value="${String(i.amount).replace('.', ',')}" aria-label="Importo rata ${i.n}">
+      <button class="doc ${i.doc ? 'on' : ''}" data-f="doc" title="Ricevuta salvata">📄</button>
+    </div>`;
+  }).join('');
+  const nPaid = s.inst.filter(i => i.paid).length;
+  $('#main').innerHTML = `
+    <div class="head"><button class="btn sm" id="back">‹ Prestiti</button><h1>${esc(l.name)}</h1></div>
+    <div class="grid wide-left two">
+      <div class="card hero">
+        <div class="lbl">${isDebt ? 'Ancora da restituire' : 'Ancora da ricevere'}</div>
+        <div class="big num">${money(s.remaining)} <small>di ${money(l.total, true)}</small></div>
+        <div class="meter"><i style="width:${s.pct * 100}%"></i></div>
+        <div class="meta"><span>${Math.round(s.pct * 100)}% · ${nPaid} rate su ${s.inst.length}</span><span>${s.last ? 'fine ' + fmtDate(s.last.date, { month: 'long', year: 'numeric' }) : ''}</span></div>
+        ${s.unscheduled > 0.01 ? `<div class="meta"><span>⚠️ ${money(s.unscheduled)} non coperti da rate pianificate</span></div>` : ''}
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Dettagli</h2></div>
+        <div class="form2">
+          <label class="field">Nome <input id="lName" value="${esc(l.name)}"></label>
+          <label class="field">Importo totale € <input id="lTotal" class="num" inputmode="decimal" value="${String(l.total).replace('.', ',')}"></label>
+        </div>
+        <label class="check-row"><input type="checkbox" id="lLink" ${l.linkExpense ? 'checked' : ''}> Quando segno una rata, registrala tra le ${isDebt ? 'spese (Prestiti & Rate)' : 'entrate'}</label>
+        <label class="check-row"><input type="checkbox" id="lKind" ${isDebt ? '' : 'checked'}> Sono soldi che mi devono (credito)</label>
+      </div>
+    </div>
+    <div class="card section">
+      <div class="card-head"><h2>Rate</h2>
+        <span class="sub">${s.overdue.length ? `<button class="btn sm" id="payLate">✓ Segna le ${s.overdue.length} scadute come ${isDebt ? 'pagate' : 'ricevute'}</button>` : ''}</span></div>
+      ${nPaid ? `<button class="linkbtn" id="togglePaid">${showAll ? 'Nascondi' : 'Mostra'} le ${nPaid} rate già ${isDebt ? 'pagate' : 'ricevute'}</button>` : ''}
+      <div class="insts">${rows || `<p class="muted">${s.inst.length ? 'Tutte le rate sono ' + (isDebt ? 'pagate' : 'ricevute') + ' 🎉' : 'Nessuna rata pianificata.'}</p>`}</div>
+      <div class="addinst">
+        <span class="note">Aggiungi rate mensili:</span>
+        <input id="aiCount" class="num" inputmode="numeric" placeholder="n°" aria-label="Numero di rate">
+        <span class="note">da €</span><input id="aiAmount" class="num" inputmode="decimal" placeholder="${s.inst.at(-1)?.amount ?? ''}" aria-label="Importo">
+        <span class="note">dal</span><input id="aiDate" type="date" value="${s.last ? ym(new Date(new Date(s.last.date).getFullYear(), new Date(s.last.date).getMonth() + 1, 1)) + s.last.date.slice(7) : today()}" aria-label="Prima data">
+        <button class="btn sm" id="aiAdd">Aggiungi</button>
+      </div>
+    </div>
+    <button class="danger section" id="lDel" style="display:block">Elimina questo prestito</button>`;
+  const touch = () => { l.updated = Date.now(); save(); };
+  $('#back').onclick = () => { ui.view = 'loans'; render(); };
+  $('#lName').onchange = e => { if (e.target.value.trim()) { l.name = e.target.value.trim(); touch(); viewLoan(); } };
+  $('#lTotal').onchange = e => { const v = parseNum(e.target.value); if (v) { l.total = v; touch(); viewLoan(); } };
+  $('#lLink').onchange = e => { l.linkExpense = e.target.checked; touch(); toast(l.linkExpense ? 'Le prossime rate segnate andranno anche tra le spese' : 'Le rate non verranno più registrate tra le spese'); };
+  $('#lKind').onchange = e => { l.kind = e.target.checked ? 'credit' : 'debt'; touch(); viewLoan(); };
+  if ($('#togglePaid')) $('#togglePaid').onclick = () => { ui.showPaid = !ui.showPaid; viewLoan(); };
+  if ($('#payLate')) $('#payLate').onclick = () => {
+    if (!confirm(`Segnare ${s.overdue.length} rate scadute come ${isDebt ? 'pagate' : 'ricevute'}?` + (l.linkExpense ? '\nVerranno registrate anche tra i movimenti con la data di oggi.' : ''))) return;
+    for (const i of s.overdue) setPaid(l, i, true);
+    touch(); toast('Fatto ✓'); viewLoan();
+  };
+  document.querySelectorAll('.inst').forEach(row => {
+    const i = l.installments.find(x => x.n === +row.dataset.n);
+    row.querySelectorAll('[data-f]').forEach(el => {
+      const f = el.dataset.f;
+      if (f === 'paid') el.onchange = () => { setPaid(l, i, el.checked); touch(); viewLoan(); };
+      else if (f === 'doc') el.onclick = () => { i.doc = !i.doc; touch(); el.classList.toggle('on', i.doc); };
+      else el.onchange = () => { if (f === 'date' && el.value) i.date = el.value; if (f === 'amount') { const v = parseNum(el.value); if (v > 0) i.amount = v; } touch(); viewLoan(); };
+    });
+  });
+  $('#aiAdd').onclick = () => {
+    const n = parseInt($('#aiCount').value, 10), amt = parseNum($('#aiAmount').value || $('#aiAmount').placeholder), d = $('#aiDate').value;
+    if (!n || !amt || !d) return toast('Indica numero di rate, importo e data');
+    const start = Math.max(0, ...l.installments.map(x => x.n)) + 1;
+    l.installments.push(...makeSchedule(start, n, amt, d)); touch(); toast(`Aggiunte ${n} rate`); viewLoan();
+  };
+  $('#lDel').onclick = () => {
+    if (!confirm(`Eliminare il prestito "${l.name}" con tutte le sue rate? I movimenti già registrati tra le spese restano.`)) return;
+    db.loans = db.loans.filter(x => x !== l); db.deleted[l.id] = Date.now(); save(); ui.view = 'loans'; render();
+  };
+}
+// pulsante "✓ Pagata" sulle schede della lista
+document.addEventListener('click', e => {
+  const pay = e.target.closest('[data-pay]');
+  if (pay) {
+    const l = db.loans.find(x => x.id === pay.dataset.pay), s = loanStats(l);
+    if (s.next) { setPaid(l, s.next, true); l.updated = Date.now(); save(); toast(`Rata #${s.next.n} di ${l.name}: ${l.kind === 'debt' ? 'pagata' : 'ricevuta'} ✓`); render(); }
+    return;
+  }
+  const card = e.target.closest('[data-loan]');
+  if (card) { ui.view = 'loan'; ui.loanId = card.dataset.loan; ui.showPaid = false; render(); scrollTo(0, 0); }
+});
+
 // ---------- Import / export ----------
 function exportData() { const { local, ...rest } = db; return { app: 'expenses', exportedAt: new Date().toISOString(), ...rest }; }
 function importData(d) {
+  if (d && d.type === 'loans') return importLoans(d);
   if (!d || !Array.isArray(d.transactions)) throw new Error('mancano i movimenti');
   const n = d.transactions.length;
   if (db.transactions.length && !confirm(`Sostituire i ${db.transactions.length} movimenti di questo dispositivo con i ${n} del file?` + (db.local.syncUrl ? '\n\nCon la sincronizzazione attiva, i movimenti presenti su Drive verranno poi uniti a questi.' : ''))) return;
   const local = db.local;
-  db = migrate({ ...blank(), transactions: d.transactions, budgets: d.budgets || {}, recurring: d.recurring || [], settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {}, version: d.version || 1 });
+  db = migrate({ ...blank(), transactions: d.transactions, budgets: d.budgets || {}, recurring: d.recurring || [], loans: d.loans || [], settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {}, version: d.version || 1 });
   db.local = local; db.stamps.budgets = db.stamps.incomeTarget = Date.now(); // l'import esplicito vince sui budget remoti
   save(); runRecurring(); toast(`Importati ${n} movimenti`); ui.view = 'home'; render();
 }
@@ -564,7 +769,7 @@ async function call(body) {
 /** I dati che viaggiano su Drive (senza le impostazioni locali), in ordine stabile per poterli confrontare */
 function payload(d) {
   const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  return { version: DATA_VERSION, transactions: [...(d.transactions || [])].sort(byId), recurring: [...(d.recurring || [])].sort(byId), budgets: d.budgets || {}, settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {} };
+  return { version: DATA_VERSION, transactions: [...(d.transactions || [])].sort(byId), recurring: [...(d.recurring || [])].sort(byId), loans: [...(d.loans || [])].sort(byId), budgets: d.budgets || {}, settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {} };
 }
 /** Unisce i dati di due dispositivi: per ogni movimento vince la modifica più recente, le cancellazioni valgono per tutti */
 function mergeData(a, b) {
@@ -587,7 +792,7 @@ function mergeData(a, b) {
   const budgets = newer('budgets', a.budgets, b.budgets, v => !v || !Object.keys(v).length);
   const incomeTarget = newer('incomeTarget', a.settings?.incomeTarget, b.settings?.incomeTarget, v => v == null);
   return {
-    transactions, recurring, budgets: { ...budgets }, settings: { ...a.settings, incomeTarget }, deleted: del,
+    transactions, recurring, loans: pick(a.loans, b.loans), budgets: { ...budgets }, settings: { ...a.settings, incomeTarget }, deleted: del,
     stamps: { budgets: Math.max(sa.budgets || 0, sb.budgets || 0), incomeTarget: Math.max(sa.incomeTarget || 0, sb.incomeTarget || 0) },
   };
 }
