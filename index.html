@@ -57,6 +57,24 @@
     </form>
   </dialog>
 
+  <dialog id="recDialog">
+    <form id="recForm" method="dialog">
+      <div class="dlg-head"><h2 id="recTitle">Spesa fissa</h2><button type="button" class="icon-btn" id="recClose" aria-label="Chiudi">✕</button></div>
+      <label>Nome <input id="rName" autocomplete="off" placeholder="es. Netflix"></label>
+      <div class="row2">
+        <label>Importo mensile € <input id="rAmount" inputmode="decimal" autocomplete="off" placeholder="0,00"></label>
+        <label>Giorno del mese <input id="rDay" inputmode="numeric" autocomplete="off"></label>
+      </div>
+      <label>Categoria <select id="rCat"></select></label>
+      <label class="check"><input type="checkbox" id="rActive"> Attiva: registrala in automatico ogni mese</label>
+      <div class="actions">
+        <button type="button" class="danger" id="rDelete">Elimina</button>
+        <span class="grow"></span>
+        <button type="submit" class="primary">Salva</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="tip" role="tooltip"></div>
   <div id="toast" role="status"></div>
   <script src="app.js"></script>

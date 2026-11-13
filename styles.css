@@ -300,3 +300,18 @@ h2.sec { margin: 22px 2px 10px; font-size: .78rem; text-transform: uppercase; le
 .addinst { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 14px; }
 .addinst input { background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 7px 8px; width: 84px; font-size: .88rem; }
 .addinst input[type=date] { width: auto; }
+
+/* ---------- spese fisse (righe bloccate) ---------- */
+.recs { display: grid; }
+.rec2 { display: grid; grid-template-columns: 36px 1fr auto 34px 34px; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.rec2:last-child { border-bottom: 0; }
+.rec2 .emo { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; }
+.rec2 .mid { min-width: 0; }
+.rec2 .mid b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec2 .mid .s { display: block; font-size: .78rem; color: var(--muted); }
+.rec2 .amt { font-weight: 650; }
+.rec2 .x { border: 0; background: none; width: 34px; height: 34px; border-radius: 10px; font-size: 1rem; color: var(--muted); }
+.rec2 .x:hover { background: var(--accent-soft); }
+.rec2.off { opacity: .5; }
+.dlg-head h2 { flex: 1; font-size: 1.15rem; }
+dialog select { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; color: var(--ink); font-size: 1rem; width: 100%; }

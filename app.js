@@ -40,6 +40,7 @@ const cat = k => CATS[k] || CATS.other;
 const gcolor = k => GROUPS[cat(k).g].color;
 
 // ---------- Stato ----------
+const APP_VERSION = 7; // aumentala insieme a VERSION in sw.js
 const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 4;
 // deleted: id → quando è stato cancellato; stamps: quando sono cambiati budget/entrate; local: impostazioni di questo dispositivo (non sincronizzate)
 const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], loans: [], settings: {}, deleted: {}, stamps: {}, local: {} });
@@ -400,13 +401,13 @@ function viewBudget() {
   }).join('');
   const tot = totalBudget(), inc = db.settings.incomeTarget;
   const recTot = -db.recurring.filter(r => r.active).reduce((a, r) => a + r.amount, 0);
-  const catOpts = sel => EXPENSE_CATS.map(k => `<option value="${k}" ${sel === k ? 'selected' : ''}>${cat(k).emo} ${cat(k).label}</option>`).join('');
-  const recRows = db.recurring.slice().sort((a, b) => a.amount - b.amount).map(r => `<div class="rec ${r.active ? '' : 'off'}" data-rec="${r.id}">
-      <input data-f="name" value="${esc(r.name)}" aria-label="Nome">
-      <input data-f="amount" class="num" inputmode="decimal" value="${Math.abs(r.amount)}" aria-label="Importo">
-      <select data-f="category" class="c-cat" aria-label="Categoria">${catOpts(r.category)}</select>
-      <input data-f="day" class="num" inputmode="numeric" value="${r.day || 1}" aria-label="Giorno del mese">
-      <button class="x" data-f="toggle" title="${r.active ? 'Sospendi' : 'Riattiva'}" aria-label="${r.active ? 'Sospendi' : 'Riattiva'}">${r.active ? '⏸' : '▶'}</button></div>`).join('');
+  const recRows = db.recurring.slice().sort((a, b) => a.amount - b.amount).map(r => `<div class="rec2 ${r.active ? '' : 'off'}">
+      <span class="emo" style="background:${gcolor(r.category)}1f">${cat(r.category).emo}</span>
+      <span class="mid"><b>${esc(r.name)}</b><span class="s">${cat(r.category).label} · giorno ${r.day || 1}${r.active ? '' : ' · sospesa'}</span></span>
+      <span class="amt num">${money(-r.amount)}</span>
+      <button class="x" data-rtoggle="${r.id}" title="${r.active ? 'Sospendi' : 'Riattiva'}" aria-label="${r.active ? 'Sospendi' : 'Riattiva'} ${esc(r.name)}">${r.active ? '⏸' : '▶'}</button>
+      <button class="x" data-redit="${r.id}" title="Modifica" aria-label="Modifica ${esc(r.name)}">✏️</button>
+    </div>`).join('');
   $('#main').innerHTML = `
     <div class="head"><h1>Budget</h1></div>
     <div class="grid two">
@@ -419,16 +420,9 @@ function viewBudget() {
       <div class="card">
         <div class="card-head"><h2>Spese fisse ricorrenti</h2><span class="sub num">${money(recTot, true)}/mese</span></div>
         <p class="note" style="margin-top:-6px">Vengono registrate da sole ogni mese, nel giorno indicato.</p>
-        <div class="rec head"><span>Nome</span><span>€</span><span class="c-cat">Categoria</span><span>Giorno</span><span></span></div>
-        ${recRows || '<p class="muted">Nessuna spesa ricorrente.</p>'}
-        <div class="rec new" id="newRec">
-          <input id="nrName" placeholder="Nuova… es. Netflix" aria-label="Nome nuova spesa ricorrente">
-          <input id="nrAmount" class="num" inputmode="decimal" placeholder="0" aria-label="Importo">
-          <select id="nrCat" class="c-cat" aria-label="Categoria">${catOpts('subscriptions')}</select>
-          <input id="nrDay" class="num" inputmode="numeric" value="1" aria-label="Giorno">
-          <button class="x" id="nrAdd" title="Aggiungi" aria-label="Aggiungi" style="color:var(--accent-2);font-size:1.4rem">＋</button>
-        </div>
-        <p class="note">⏸ sospende una voce. Per eliminarla svuota il nome.</p>
+        <div class="recs">${recRows || '<p class="muted">Nessuna spesa ricorrente.</p>'}</div>
+        <button class="btn" id="recAdd" style="margin-top:12px">+ Aggiungi spesa fissa</button>
+        <p class="note">✏️ per modificare o eliminare, ⏸ per sospendere senza cancellare.</p>
       </div>
     </div>`;
   document.querySelectorAll('[data-bud]').forEach(i => i.onchange = () => {
@@ -436,29 +430,13 @@ function viewBudget() {
     db.stamps.budgets = Date.now(); save(); viewBudget(); toast('Budget aggiornato');
   });
   $('#incTarget').onchange = e => { const v = parseNum(e.target.value); if (v) db.settings.incomeTarget = v; else delete db.settings.incomeTarget; db.stamps.incomeTarget = Date.now(); save(); viewBudget(); };
-  document.querySelectorAll('[data-rec]').forEach(row => {
-    const id = row.dataset.rec, cur = () => db.recurring.find(x => x.id === id);
-    row.querySelectorAll('[data-f]').forEach(el => {
-      const f = el.dataset.f;
-      if (f === 'toggle') el.onclick = () => { const r = cur(); if (!r) return viewBudget(); r.active = !r.active; r.updated = Date.now(); if (r.active) r.lastGenerated = ym(new Date()); save(); viewBudget(); };
-      else el.onchange = () => {
-        const r = cur(); if (!r) return viewBudget();
-        r.updated = Date.now();
-        if (f === 'name' && !el.value.trim()) { if (confirm(`Eliminare la spesa ricorrente "${r.name}"? I movimenti già registrati restano.`)) { db.recurring = db.recurring.filter(x => x !== r); db.deleted[r.id] = Date.now(); } }
-        else if (f === 'amount') { const v = parseNum(el.value); if (v) r.amount = -Math.abs(v); }
-        else if (f === 'day') r.day = Math.min(Math.max(parseInt(el.value, 10) || 1, 1), 28);
-        else r[f] = el.value.trim();
-        save(); viewBudget();
-      };
-    });
+  $('#recAdd').onclick = () => openRec(null);
+  document.querySelectorAll('[data-redit]').forEach(b => b.onclick = () => openRec(b.dataset.redit));
+  document.querySelectorAll('[data-rtoggle]').forEach(b => b.onclick = () => {
+    const r = db.recurring.find(x => x.id === b.dataset.rtoggle); if (!r) return viewBudget();
+    r.active = !r.active; r.updated = Date.now(); if (r.active) r.lastGenerated = ym(new Date());
+    save(); viewBudget(); toast(r.active ? `${r.name} riattivata` : `${r.name} sospesa`);
   });
-  $('#nrAdd').onclick = () => {
-    const name = $('#nrName').value.trim(), amount = parseNum($('#nrAmount').value), day = Math.min(Math.max(parseInt($('#nrDay').value, 10) || 1, 1), 28);
-    if (!name || !amount) return toast('Inserisci nome e importo');
-    const cur = ym(new Date());
-    db.recurring.push({ id: uid(), name, amount: -Math.abs(amount), category: $('#nrCat').value, day, active: true, updated: Date.now(), lastGenerated: new Date().getDate() >= day ? cur : addMonths(cur, -1) });
-    save(); runRecurring(); viewBudget(); toast('Spesa ricorrente aggiunta');
-  };
 }
 
 function viewSettings() {
@@ -497,6 +475,7 @@ function viewSettings() {
         <p class="note">Scarica tutti i dati in un file, oppure ripristinali da un file (anche quello importato dal tuo Excel).</p>
         <div class="stack"><button class="btn" id="exp">Scarica backup</button><label class="btn" style="cursor:pointer">Ripristina da file<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
         <p class="note">${db.transactions.length} movimenti su questo dispositivo.</p>
+        <p class="note">Versione app: <b>${APP_VERSION}</b></p>
       </div>
       <div class="card"><div class="card-head"><h2>Cancella dati</h2></div>
         <p class="note">Elimina tutti i dati da questo dispositivo e lo scollega dalla sincronizzazione. I dati su Google Drive e i file scaricati restano.</p>
@@ -817,8 +796,8 @@ function keepIdentity(localArr, mergedArr) {
 }
 /** Ridisegna, ma non mentre stai scrivendo in un campo o hai aperto il modulo di un movimento */
 const typing = () => { const a = document.activeElement; return !!a && a.matches('#main input, #main select, #main textarea'); };
-function renderWhenIdle() { if ($('#txDialog').open || typing()) pendingRender = true; else render(); }
-document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !$('#txDialog').open && !typing()) { pendingRender = false; render(); } }, 0));
+function renderWhenIdle() { if (document.querySelector('dialog[open]') || typing()) pendingRender = true; else render(); }
+document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !document.querySelector('dialog[open]') && !typing()) { pendingRender = false; render(); } }, 0));
 async function doSync() {
   clearTimeout(syncTimer); setSync('busy');
   try {
@@ -934,6 +913,52 @@ function out_(obj) {
 `;
 }
 
+
+// ---------- Finestra spesa fissa ----------
+let recEditing = null; // id della spesa fissa in modifica (null = nuova)
+function openRec(id) {
+  const r = id ? db.recurring.find(x => x.id === id) : null;
+  if (id && !r) return viewBudget();
+  recEditing = id;
+  $('#recTitle').textContent = r ? 'Modifica spesa fissa' : 'Nuova spesa fissa';
+  $('#rName').value = r ? r.name : '';
+  $('#rAmount').value = r ? String(Math.abs(r.amount)).replace('.', ',') : '';
+  $('#rDay').value = r ? r.day || 1 : Math.min(new Date().getDate(), 28);
+  $('#rCat').innerHTML = EXPENSE_CATS.map(k => `<option value="${k}" ${(r ? r.category : 'subscriptions') === k ? 'selected' : ''}>${cat(k).emo} ${cat(k).label}</option>`).join('');
+  $('#rActive').checked = r ? r.active : true;
+  $('#rDelete').style.display = r ? '' : 'none';
+  $('#recDialog').showModal();
+  setTimeout(() => $('#rName').focus(), 60);
+}
+$('#recForm').onsubmit = e => {
+  e.preventDefault();
+  const name = $('#rName').value.trim(), amount = parseNum($('#rAmount').value), day = Math.min(Math.max(parseInt($('#rDay').value, 10) || 1, 1), 28);
+  if (!name) { $('#rName').focus(); return toast('Inserisci un nome'); }
+  if (!amount) { $('#rAmount').focus(); return toast("Inserisci l'importo"); }
+  const data = { name, amount: -Math.abs(amount), category: $('#rCat').value, day, updated: Date.now() };
+  const active = $('#rActive').checked;
+  if (recEditing) {
+    const r = db.recurring.find(x => x.id === recEditing); // cercata adesso, non quando si è aperta la finestra
+    if (!r) { $('#recDialog').close(); toast('Questa spesa fissa è stata eliminata da un altro dispositivo'); return viewBudget(); }
+    if (active && !r.active) r.lastGenerated = ym(new Date());
+    Object.assign(r, data, { active });
+    toast('Salvato ✓');
+  } else {
+    const cur = ym(new Date());
+    db.recurring.push({ id: uid(), ...data, active, lastGenerated: new Date().getDate() >= day ? cur : addMonths(cur, -1) });
+    toast('Spesa fissa aggiunta ✓');
+  }
+  $('#recDialog').close(); save(); runRecurring(); viewBudget();
+};
+$('#recClose').onclick = () => $('#recDialog').close();
+$('#recDialog').addEventListener('click', e => { if (e.target === $('#recDialog')) $('#recDialog').close(); });
+$('#recDialog').addEventListener('close', () => { if (pendingRender) render(); });
+$('#rDelete').onclick = () => {
+  const r = db.recurring.find(x => x.id === recEditing); if (!r) return $('#recDialog').close();
+  if (!confirm(`Eliminare la spesa fissa "${r.name}"? I movimenti già registrati restano.`)) return;
+  db.recurring = db.recurring.filter(x => x !== r); db.deleted[r.id] = Date.now();
+  $('#recDialog').close(); save(); viewBudget(); toast('Eliminata');
+};
 
 // ---------- Modulo movimento ----------
 let editing = null, kind = 'expense', selCat = 'groceries', lastExpenseCat = null;
