@@ -27,21 +27,33 @@ Al primo avvio vai su **Impostazioni → Ripristina da file** e scegli `import/f
 - **PC:** apri l'indirizzo con Chrome o Edge e clicca l'icona "Installa" nella barra degli indirizzi.
 - **APK vero e proprio (facoltativo):** vai su https://www.pwabuilder.com, incolla l'indirizzo, scegli **Android → Generate package** e installa l'APK che scarichi. Non serve il Play Store.
 
-I dati sono salvati separatamente su ogni dispositivo. Per passarli da uno all'altro usa il backup: lo salvi da un dispositivo e lo ripristini sull'altro.
+## 4. Sincronizzazione automatica tra PC e telefono (gratis)
 
-## 4. Attivare il backup su Google Drive (gratis, una volta sola)
+L'app salva i dati su Google Drive tramite un piccolo script Google tutto tuo. Non serve la Google Cloud Console.
 
-1. Vai su https://console.cloud.google.com e crea un progetto, per esempio "Expenses".
-2. **API e servizi → Libreria**: cerca "Google Drive API" e clicca **Abilita**.
-3. **Schermata consenso OAuth**: tipo *Esterno*, inserisci nome app e la tua email. Nella sezione *Utenti di test* aggiungi il tuo indirizzo Gmail.
-4. **Credenziali → Crea credenziali → ID client OAuth**, tipo *Applicazione web*. In *Origini JavaScript autorizzate* aggiungi:
-   - `http://localhost:5173`
-   - `https://TUO-UTENTE.github.io`
-5. Copia l'**ID client** (finisce con `.apps.googleusercontent.com`) e incollalo in **Impostazioni → Google Client ID** nell'app.
+**Sul primo dispositivo (es. il PC, dove hai già i dati):**
 
-Da quel momento hai i pulsanti **Salva su Drive** e **Ripristina da Drive**. L'app può vedere solo il file `expenses-backup.json` che crea lei, nient'altro del tuo Drive.
+1. Apri **Impostazioni → Prima configurazione** e premi **Copia il codice**. Il codice contiene già una chiave segreta generata per te.
+2. Apri https://script.google.com, crea un nuovo progetto, cancella quello che c'è e incolla.
+3. **Esegui il deployment → Nuovo deployment**, tipo **App web**, *Esegui come: Me*, *Chi ha accesso: Chiunque*.
+4. Autorizza con il tuo account Google. Se compare "App non verificata": *Avanzate → Vai a … (non sicuro)*. È il tuo script.
+5. Copia l'**URL dell'app web** e incollalo nell'app, poi premi **Collega**.
 
-Finché l'app resta in modalità "test", Google mostra un avviso del tipo "app non verificata": è normale, clicca *Continua*.
+**Sugli altri dispositivi (es. il telefono):**
+
+1. Sul PC: **Impostazioni → Copia link per un altro dispositivo**.
+2. Manda il link a te stesso (per esempio nei *Messaggi salvati* di Telegram) e aprilo sul telefono. Si collega da solo e scarica tutto.
+
+Da quel momento:
+
+- ogni modifica viene caricata su Drive in automatico;
+- gli altri dispositivi la ricevono quando li apri, e ogni 2 minuti se l'app resta aperta;
+- se due dispositivi cambiano cose diverse nello stesso momento, vengono tenute entrambe;
+- ogni giorno resta una copia nella cartella **Expenses backup** del tuo Drive (ultimi 60 giorni).
+
+Il pallino verde sull'icona Impostazioni indica che la sincronizzazione è attiva: arancione mentre sincronizza, rosso se c'è un problema.
+
+> ⚠️ Il link di collegamento contiene la chiave: chi lo ha può leggere i tuoi dati. Mandalo solo a te stesso.
 
 ## Aggiornare l'app
 

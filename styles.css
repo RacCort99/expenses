@@ -240,3 +240,17 @@ dialog input:focus, .field input:focus, .filters input:focus, .filters select:fo
   opacity: 0; pointer-events: none; transition: .25s; z-index: 50; max-width: calc(100vw - 32px);
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---------- sincronizzazione ---------- */
+.nav button { position: relative; }
+#syncDot { position: absolute; top: 6px; left: calc(50% + 8px); width: 8px; height: 8px; border-radius: 50%; background: var(--good); border: 2px solid var(--card); }
+#syncDot[data-s=off] { display: none; }
+#syncDot[data-s=busy] { background: var(--accent); animation: pulse 1s infinite alternate; }
+#syncDot[data-s=error] { background: var(--bad); }
+@keyframes pulse { to { opacity: .35; } }
+@media (min-width: 900px) { #syncDot { top: 50%; left: auto; right: 12px; margin-top: -4px; } }
+.setup { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.setup summary { cursor: pointer; font-weight: 600; }
+.setup ol { padding-left: 20px; margin: 12px 0; display: grid; gap: 10px; font-size: .9rem; }
+.setup a { color: var(--accent-2); font-weight: 600; }
+#syncStatus { max-width: 60%; text-align: right; }

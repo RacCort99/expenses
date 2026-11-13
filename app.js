@@ -40,8 +40,9 @@ const cat = k => CATS[k] || CATS.other;
 const gcolor = k => GROUPS[cat(k).g].color;
 
 // ---------- Stato ----------
-const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 2;
-const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], settings: {} });
+const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 3;
+// deleted: id → quando è stato cancellato; stamps: quando sono cambiati budget/entrate; local: impostazioni di questo dispositivo (non sincronizzate)
+const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], settings: {}, deleted: {}, stamps: {}, local: {} });
 let db = load();
 const ui = { view: 'home', month: ym(new Date()), q: '', cat: '', listMonth: '', limit: 200 };
 
@@ -51,7 +52,8 @@ function load() {
   }
   return blank();
 }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { toast('Errore nel salvataggio: ' + e.message); } }
+function persist() { try { localStorage.setItem(KEY, JSON.stringify(db)); return true; } catch (e) { toast('Errore nel salvataggio: ' + e.message); return false; } }
+function save() { persist(); scheduleSync(); }
 
 // ---------- Migrazione dalle vecchie categorie ----------
 function newCat(old, name) {
@@ -88,7 +90,14 @@ function newCat(old, name) {
   return CATS[old] ? old : 'other';
 }
 function migrate(d) {
-  if (d.version >= DATA_VERSION) return d;
+  if (d.version < 2) migrateV2(d);
+  if (d.version < 3) {
+    const s = d.settings || {}; delete s.driveClientId; delete s.lastDriveBackup;
+    d.settings = s; d.deleted ||= {}; d.stamps ||= {}; d.local ||= {}; d.version = 3;
+  }
+  return d;
+}
+function migrateV2(d) {
   const old = d.budgets || {};
   for (const t of d.transactions) { t.category = newCat(t.category, t.name); delete t.account; }
   for (const r of d.recurring || []) { r.category = newCat(r.category, r.name); delete r.account; }
@@ -104,8 +113,7 @@ function migrate(d) {
   for (const k of ['shopping', 'subscriptions', 'gifts']) if (old[k]) b[k] = old[k];
   if (old.vacation) b.travel = old.vacation;
   for (const k in b) if (!b[k]) delete b[k];
-  d.budgets = b; d.version = DATA_VERSION;
-  return d;
+  d.budgets = b; d.version = 2;
 }
 
 // ---------- Utility ----------
@@ -151,7 +159,7 @@ function cumulative(m) {
 }
 
 // ---------- Ricorrenti ----------
-function runRecurring() {
+function runRecurring(silent) {
   const now = today(), cur = now.slice(0, 7); let added = 0;
   for (const r of db.recurring) {
     if (!r.active) continue;
@@ -159,11 +167,15 @@ function runRecurring() {
     while (m <= cur) {
       const date = m + '-' + String(Math.min(r.day || 1, 28)).padStart(2, '0');
       if (date > now) break;
-      db.transactions.push({ id: uid(), date, category: r.category, name: r.name, amount: r.amount, recurringId: r.id });
-      r.lastGenerated = m; added++; m = addMonths(m, 1);
+      const id = `rec-${r.id}-${m}`; // stesso id su ogni dispositivo: niente doppioni dopo la sincronizzazione
+      if (!db.deleted[id] && !db.transactions.some(t => t.recurringId === r.id && t.date.startsWith(m))) {
+        db.transactions.push({ id, date, category: r.category, name: r.name, amount: r.amount, recurringId: r.id });
+        added++;
+      }
+      r.lastGenerated = m; m = addMonths(m, 1);
     }
   }
-  if (added) { save(); toast(added === 1 ? '1 spesa ricorrente registrata' : added + ' spese ricorrenti registrate'); }
+  if (added) { save(); if (!silent) toast(added === 1 ? '1 spesa ricorrente registrata' : added + ' spese ricorrenti registrate'); }
 }
 
 // ---------- Tooltip ----------
@@ -187,6 +199,7 @@ addEventListener('scroll', hideTip, { passive: true });
 // ---------- Grafici ----------
 /** Andamento cumulativo del mese vs media dei mesi precedenti e budget */
 function drawPace(el, m) {
+  if (el.clientWidth < 120) return 0; // contenitore non visibile
   const W = el.clientWidth, H = 220, pl = 44, pr = 10, pt = 12, pb = 24;
   const n = daysIn(m), isCur = m === ym(new Date()), upto = isCur ? new Date().getDate() : n;
   const cur = cumulative(m), refs = refMonths(m);
@@ -222,6 +235,7 @@ function drawPace(el, m) {
 }
 /** Ultimi 12 mesi: barre impilate per gruppo + entrate */
 function drawYear(el, sel) {
+  if (el.clientWidth < 120) return;
   const W = el.clientWidth, H = 230, pl = 44, pr = 6, pt = 10, pb = 24;
   const months = Array.from({ length: 12 }, (_, i) => addMonths(sel, i - 11)).map(m => ({ m, ...summary(m) }));
   const max = Math.max(1, ...months.map(d => Math.max(d.income, d.expense))) * 1.05;
@@ -417,16 +431,17 @@ function viewBudget() {
     </div>`;
   document.querySelectorAll('[data-bud]').forEach(i => i.onchange = () => {
     const v = parseNum(i.value); if (v === null || v <= 0) delete db.budgets[i.dataset.bud]; else db.budgets[i.dataset.bud] = v;
-    save(); viewBudget(); toast('Budget aggiornato');
+    db.stamps.budgets = Date.now(); save(); viewBudget(); toast('Budget aggiornato');
   });
-  $('#incTarget').onchange = e => { const v = parseNum(e.target.value); if (v) db.settings.incomeTarget = v; else delete db.settings.incomeTarget; save(); viewBudget(); };
+  $('#incTarget').onchange = e => { const v = parseNum(e.target.value); if (v) db.settings.incomeTarget = v; else delete db.settings.incomeTarget; db.stamps.incomeTarget = Date.now(); save(); viewBudget(); };
   document.querySelectorAll('[data-rec]').forEach(row => {
     const r = db.recurring.find(x => x.id === row.dataset.rec);
     row.querySelectorAll('[data-f]').forEach(el => {
       const f = el.dataset.f;
-      if (f === 'toggle') el.onclick = () => { r.active = !r.active; if (r.active) r.lastGenerated = ym(new Date()); save(); viewBudget(); };
+      if (f === 'toggle') el.onclick = () => { r.active = !r.active; r.updated = Date.now(); if (r.active) r.lastGenerated = ym(new Date()); save(); viewBudget(); };
       else el.onchange = () => {
-        if (f === 'name' && !el.value.trim()) { if (confirm(`Eliminare la spesa ricorrente "${r.name}"? I movimenti già registrati restano.`)) db.recurring = db.recurring.filter(x => x !== r); }
+        r.updated = Date.now();
+        if (f === 'name' && !el.value.trim()) { if (confirm(`Eliminare la spesa ricorrente "${r.name}"? I movimenti già registrati restano.`)) { db.recurring = db.recurring.filter(x => x !== r); db.deleted[r.id] = Date.now(); } }
         else if (f === 'amount') { const v = parseNum(el.value); if (v) r.amount = -Math.abs(v); }
         else if (f === 'day') r.day = Math.min(Math.max(parseInt(el.value, 10) || 1, 1), 28);
         else r[f] = el.value.trim();
@@ -438,106 +453,242 @@ function viewBudget() {
     const name = $('#nrName').value.trim(), amount = parseNum($('#nrAmount').value), day = Math.min(Math.max(parseInt($('#nrDay').value, 10) || 1, 1), 28);
     if (!name || !amount) return toast('Inserisci nome e importo');
     const cur = ym(new Date());
-    db.recurring.push({ id: uid(), name, amount: -Math.abs(amount), category: $('#nrCat').value, day, active: true, lastGenerated: new Date().getDate() >= day ? cur : addMonths(cur, -1) });
+    db.recurring.push({ id: uid(), name, amount: -Math.abs(amount), category: $('#nrCat').value, day, active: true, updated: Date.now(), lastGenerated: new Date().getDate() >= day ? cur : addMonths(cur, -1) });
     save(); runRecurring(); viewBudget(); toast('Spesa ricorrente aggiunta');
   };
 }
 
 function viewSettings() {
-  const s = db.settings;
+  const L = db.local, on = !!L.syncUrl;
+  L.pendingKey ||= randomKey();
+  const syncCard = on ? `
+      <div class="card"><div class="card-head"><h2>Sincronizzazione</h2><span class="sub" id="syncStatus">${syncText()}</span></div>
+        <p class="note" style="margin-top:-6px">Ogni modifica viene salvata da sola su Google Drive e arriva sugli altri dispositivi collegati quando li apri. Ogni giorno resta anche una copia nella cartella <b>Expenses backup</b> del tuo Drive.</p>
+        <div class="stack"><button class="primary" id="syncNow">Sincronizza ora</button><button class="btn" id="copyLink">Copia link per un altro dispositivo</button></div>
+        <p class="note">Apri quel link sul telefono (o su un altro PC) e si collega da solo. Mandalo solo a te stesso, per esempio nei "Messaggi salvati" di Telegram: chi ha il link può leggere i tuoi dati.</p>
+        <button class="danger" id="unlink">Scollega questo dispositivo</button>
+      </div>` : `
+      <div class="card"><div class="card-head"><h2>Sincronizzazione automatica</h2></div>
+        <p class="note" style="margin-top:-6px"><b>Hai già collegato un altro dispositivo?</b> Lì vai su Impostazioni → <i>Copia link per un altro dispositivo</i>, poi apri il link qui oppure incollalo sotto.</p>
+        <label class="field">Link di collegamento <input id="linkIn" placeholder="https://…/expenses/#sync=…" autocomplete="off"></label>
+        <button class="primary" id="linkGo">Collega</button>
+        <details class="setup"><summary>Prima configurazione (una volta sola, 5 minuti)</summary>
+          <ol>
+            <li><button class="btn" id="copyScript">Copia il codice</button></li>
+            <li>Apri <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> (crea un nuovo progetto), cancella quello che c'è e incolla.</li>
+            <li>In alto a destra: <b>Esegui il deployment → Nuovo deployment</b>. Come tipo (icona ⚙) scegli <b>App web</b>, poi <b>Esegui come: Me</b> e <b>Chi ha accesso: Chiunque</b>. Premi <b>Esegui il deployment</b>.</li>
+            <li>Autorizza con il tuo account Google. Se compare "App non verificata": <i>Avanzate → Vai a … (non sicuro)</i>. È il tuo script, nessun altro lo usa.</li>
+            <li>Copia l'<b>URL dell'app web</b> e incollalo qui:</li>
+          </ol>
+          <label class="field">URL dell'app web <input id="urlIn" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+          <button class="primary" id="urlGo">Collega</button>
+        </details>
+      </div>`;
   $('#main').innerHTML = `
     <div class="head"><h1>Impostazioni</h1></div>
     <div class="grid two">
-      <div class="card"><div class="card-head"><h2>Backup su Google Drive</h2></div>
-        ${s.driveClientId ? `
-          <p class="note">${s.lastDriveBackup ? 'Ultimo backup: ' + new Date(s.lastDriveBackup).toLocaleString('it-IT') : 'Nessun backup ancora.'}</p>
-          <div class="stack"><button class="primary" id="driveUp">Salva su Drive</button><button class="btn" id="driveDown">Ripristina da Drive</button></div>
-          <p class="note">Il file si chiama <b>${DRIVE_FILE}</b>. L'app vede solo quel file, non il resto del tuo Drive.</p>` :
-          `<p class="note">Serve un "Client ID" Google, gratuito: si configura una volta sola (vedi LEGGIMI.md).</p>`}
-        <label class="field">Google Client ID <input id="cid" value="${esc(s.driveClientId || '')}" placeholder="xxxx.apps.googleusercontent.com"></label>
-      </div>
+      ${syncCard}
       <div class="card"><div class="card-head"><h2>Backup su file</h2></div>
         <p class="note">Scarica tutti i dati in un file, oppure ripristinali da un file (anche quello importato dal tuo Excel).</p>
         <div class="stack"><button class="btn" id="exp">Scarica backup</button><label class="btn" style="cursor:pointer">Ripristina da file<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
-        <p class="note">${db.transactions.length} movimenti salvati su questo dispositivo.</p>
+        <p class="note">${db.transactions.length} movimenti su questo dispositivo.</p>
       </div>
       <div class="card"><div class="card-head"><h2>Cancella dati</h2></div>
-        <p class="note">Elimina tutti i dati da questo dispositivo. I backup su Drive e i file scaricati restano.</p>
+        <p class="note">Elimina tutti i dati da questo dispositivo e lo scollega dalla sincronizzazione. I dati su Google Drive e i file scaricati restano.</p>
         <button class="danger" id="wipe" style="border:1px solid var(--bad)">Cancella tutti i dati</button>
       </div>
     </div>`;
-  $('#cid').onchange = e => { s.driveClientId = e.target.value.trim() || undefined; save(); viewSettings(); };
+  persist();
+  if (on) {
+    $('#syncNow').onclick = () => sync();
+    $('#copyLink').onclick = () => copyText(location.origin + location.pathname + '#sync=' + b64enc(JSON.stringify({ u: L.syncUrl, k: L.syncKey })));
+    $('#unlink').onclick = () => { if (confirm('Scollegare questo dispositivo? I dati restano qui e su Drive, ma non verranno più sincronizzati.')) { delete L.syncUrl; delete L.syncKey; delete L.lastSync; persist(); setSync('off'); viewSettings(); } };
+  } else {
+    $('#copyScript').onclick = () => copyText(syncScript(L.pendingKey));
+    $('#urlGo').onclick = () => connect($('#urlIn').value, L.pendingKey);
+    $('#linkGo').onclick = () => {
+      const m = $('#linkIn').value.match(/sync=([\w-]+)/);
+      try { const { u, k } = JSON.parse(b64dec(m[1])); connect(u, k); } catch { toast('Link non valido: copialo di nuovo dall\'altro dispositivo'); }
+    };
+  }
   $('#exp').onclick = () => {
     const blob = new Blob([JSON.stringify(exportData(), null, 1)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `expenses-backup-${today()}.json`; a.click(); URL.revokeObjectURL(a.href);
   };
   $('#imp').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { importData(JSON.parse(await f.text())); } catch (err) { toast('File non valido: ' + err.message); } };
-  $('#wipe').onclick = () => { if (confirm('Cancellare davvero tutti i dati da questo dispositivo? Non si può annullare.')) { db = blank(); save(); toast('Dati cancellati'); render(); } };
-  if ($('#driveUp')) { $('#driveUp').onclick = driveBackup; $('#driveDown').onclick = driveRestore; }
+  $('#wipe').onclick = () => { if (confirm('Cancellare davvero tutti i dati da questo dispositivo? Non si può annullare.')) { db = blank(); persist(); setSync('off'); toast('Dati cancellati'); render(); } };
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); toast('Copiato ✓'); } catch { prompt('Copia questo testo:', t); }
 }
 
 // ---------- Import / export ----------
-function exportData() { return { app: 'expenses', exportedAt: new Date().toISOString(), ...db }; }
+function exportData() { const { local, ...rest } = db; return { app: 'expenses', exportedAt: new Date().toISOString(), ...rest }; }
 function importData(d) {
   if (!d || !Array.isArray(d.transactions)) throw new Error('mancano i movimenti');
   const n = d.transactions.length;
-  if (db.transactions.length && !confirm(`Sostituire i ${db.transactions.length} movimenti attuali con i ${n} del backup?`)) return;
-  const keepCid = db.settings.driveClientId;
-  db = migrate({ ...blank(), transactions: d.transactions, budgets: d.budgets || {}, recurring: d.recurring || [], settings: { ...(d.settings || {}) }, version: d.version || 1 });
-  if (keepCid) db.settings.driveClientId = keepCid;
+  if (db.transactions.length && !confirm(`Sostituire i ${db.transactions.length} movimenti di questo dispositivo con i ${n} del file?` + (db.local.syncUrl ? '\n\nCon la sincronizzazione attiva, i movimenti presenti su Drive verranno poi uniti a questi.' : ''))) return;
+  const local = db.local;
+  db = migrate({ ...blank(), transactions: d.transactions, budgets: d.budgets || {}, recurring: d.recurring || [], settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {}, version: d.version || 1 });
+  db.local = local; db.stamps.budgets = db.stamps.incomeTarget = Date.now(); // l'import esplicito vince sui budget remoti
   save(); runRecurring(); toast(`Importati ${n} movimenti`); ui.view = 'home'; render();
 }
 
-// ---------- Google Drive ----------
-const DRIVE_FILE = 'expenses-backup.json';
-let gisLoaded, driveToken = null;
-function loadGis() {
-  return gisLoaded ||= new Promise((res, rej) => {
-    const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.onload = res;
-    s.onerror = () => { gisLoaded = null; rej(new Error('impossibile contattare Google (sei offline?)')); };
-    document.head.appendChild(s);
-  });
+// ---------- Sincronizzazione (Google Drive tramite un Google Apps Script personale) ----------
+let syncing = false, syncQueued = false, syncTimer = null, syncState = { s: 'off', msg: '' }, pendingRender = false;
+function randomKey() { const a = new Uint8Array(24); crypto.getRandomValues(a); return b64enc(String.fromCharCode(...a)); }
+function b64enc(s) { return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function b64dec(s) { return decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/')))); }
+function ago(ts) { const s = (Date.now() - ts) / 1000; if (s < 60) return 'adesso'; if (s < 3600) return Math.round(s / 60) + ' min fa'; return new Date(ts).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+function syncText() {
+  if (syncState.s === 'busy') return 'Sincronizzazione…';
+  if (syncState.s === 'error') return '⚠️ ' + esc(syncState.msg);
+  return db.local.lastSync ? '✓ Sincronizzato ' + ago(db.local.lastSync) : 'In attesa…';
 }
-async function getToken() {
-  if (driveToken && driveToken.exp > Date.now()) return driveToken.v;
-  await loadGis();
-  return new Promise((res, rej) => {
-    google.accounts.oauth2.initTokenClient({
-      client_id: db.settings.driveClientId, scope: 'https://www.googleapis.com/auth/drive.file',
-      callback: r => { if (r.error) return rej(new Error(r.error)); driveToken = { v: r.access_token, exp: Date.now() + (r.expires_in - 60) * 1000 }; res(r.access_token); },
-      error_callback: e => rej(new Error(e.message || e.type)),
-    }).requestAccessToken();
-  });
+function setSync(s, msg = '') {
+  syncState = { s, msg };
+  $('#syncDot').dataset.s = db.local.syncUrl ? s : 'off';
+  const el = $('#syncStatus'); if (el) el.innerHTML = syncText();
 }
-async function gfetch(url, opt = {}) {
-  const r = await fetch(url, { ...opt, headers: { ...(opt.headers || {}), Authorization: 'Bearer ' + await getToken() } });
-  if (!r.ok) throw new Error('Drive ' + r.status + ': ' + (await r.text()).slice(0, 140));
-  return r;
+function scheduleSync(ms = 1500) { if (!db.local.syncUrl) return; clearTimeout(syncTimer); syncTimer = setTimeout(sync, ms); }
+async function call(body) {
+  let r;
+  try { r = await fetch(db.local.syncUrl, { method: 'POST', body: JSON.stringify({ ...body, key: db.local.syncKey }) }); }
+  catch { throw new Error(navigator.onLine ? 'Google Drive non raggiungibile' : 'sei offline, riprovo dopo'); }
+  let j; try { j = await r.json(); } catch { throw new Error('risposta non valida: nel deployment "Chi ha accesso" deve essere "Chiunque"'); }
+  if (j.error) throw new Error(j.error === 'unauthorized' ? 'chiave di sincronizzazione non valida' : j.error);
+  return j;
 }
-async function findDriveFile() {
-  const q = encodeURIComponent(`name='${DRIVE_FILE}' and trashed=false`);
-  return (await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,modifiedTime)&orderBy=modifiedTime desc`)).json()).files?.[0];
+/** I dati che viaggiano su Drive (senza le impostazioni locali), in ordine stabile per poterli confrontare */
+function payload(d) {
+  const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return { version: DATA_VERSION, transactions: [...(d.transactions || [])].sort(byId), recurring: [...(d.recurring || [])].sort(byId), budgets: d.budgets || {}, settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {} };
 }
-async function driveBackup() {
+/** Unisce i dati di due dispositivi: per ogni movimento vince la modifica più recente, le cancellazioni valgono per tutti */
+function mergeData(a, b) {
+  const del = { ...(b.deleted || {}) };
+  for (const [k, v] of Object.entries(a.deleted || {})) del[k] = Math.max(del[k] || 0, v);
+  const pick = (la, lb) => {
+    const m = new Map();
+    for (const x of [...(lb || []), ...(la || [])]) { const o = m.get(x.id); if (!o || (x.updated || 0) >= (o.updated || 0)) m.set(x.id, x); }
+    return [...m.values()].filter(x => !(del[x.id] && del[x.id] >= (x.updated || 0)));
+  };
+  // una sola registrazione per spesa ricorrente e mese, anche se generata su due dispositivi
+  const seen = new Set();
+  const transactions = pick(a.transactions, b.transactions)
+    .sort((x, y) => (y.id.startsWith('rec-') ? 1 : 0) - (x.id.startsWith('rec-') ? 1 : 0))
+    .filter(t => { if (!t.recurringId) return true; const k = t.recurringId + '|' + t.date.slice(0, 7); if (seen.has(k)) return false; seen.add(k); return true; });
+  const lastGen = id => [...(a.recurring || []), ...(b.recurring || [])].filter(x => x.id === id).map(x => x.lastGenerated).filter(Boolean).sort().pop();
+  const recurring = pick(a.recurring, b.recurring).map(r => ({ ...r, lastGenerated: lastGen(r.id) }));
+  const sa = a.stamps || {}, sb = b.stamps || {};
+  const newer = (k, va, vb, empty) => (sa[k] || 0) > (sb[k] || 0) ? va : (sb[k] || 0) > (sa[k] || 0) ? vb : (empty(va) ? vb : va);
+  const budgets = newer('budgets', a.budgets, b.budgets, v => !v || !Object.keys(v).length);
+  const incomeTarget = newer('incomeTarget', a.settings?.incomeTarget, b.settings?.incomeTarget, v => v == null);
+  return {
+    transactions, recurring, budgets: { ...budgets }, settings: { ...a.settings, incomeTarget }, deleted: del,
+    stamps: { budgets: Math.max(sa.budgets || 0, sb.budgets || 0), incomeTarget: Math.max(sa.incomeTarget || 0, sb.incomeTarget || 0) },
+  };
+}
+async function sync() {
+  if (!db.local.syncUrl) return;
+  if (syncing) { syncQueued = true; return; }
+  clearTimeout(syncTimer); syncing = true; setSync('busy');
   try {
-    toast('Salvataggio su Drive…');
-    const body = JSON.stringify(exportData()), f = await findDriveFile();
-    if (f) await gfetch(`https://www.googleapis.com/upload/drive/v3/files/${f.id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body });
-    else {
-      const fd = new FormData();
-      fd.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE, mimeType: 'application/json' })], { type: 'application/json' }));
-      fd.append('file', new Blob([body], { type: 'application/json' }));
-      await gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', body: fd });
+    let changed = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const r = await call({ action: 'get' });
+      const before = JSON.stringify(payload(db));
+      if (r.data) Object.assign(db, mergeData(db, r.data));
+      if (JSON.stringify(payload(db)) !== before) { changed = true; runRecurring(true); }
+      persist();
+      const out = payload(db);
+      if (r.data && JSON.stringify(out) === JSON.stringify(payload(r.data))) break; // Drive è già aggiornato
+      const p = await call({ action: 'put', base: r.updated || 0, data: out });
+      if (!p.conflict) break; // altrimenti un altro dispositivo ha salvato nel frattempo: riunisco e riprovo
     }
-    db.settings.lastDriveBackup = new Date().toISOString(); save(); viewSettings(); toast('Backup salvato su Google Drive ✓');
-  } catch (e) { toast('Backup non riuscito: ' + e.message); }
+    db.local.lastSync = Date.now(); persist(); setSync('ok');
+    if (changed) { if ($('#txDialog').open) pendingRender = true; else render(); }
+  } catch (e) { setSync('error', e.message); }
+  finally { syncing = false; if (syncQueued) { syncQueued = false; scheduleSync(300); } }
 }
-async function driveRestore() {
+async function connect(url, key) {
+  url = (url || '').trim();
+  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) return toast("L'indirizzo deve iniziare con https://script.google.com/");
+  const prev = { ...db.local };
+  Object.assign(db.local, { syncUrl: url, syncKey: key }); delete db.local.lastSync;
+  try { setSync('busy'); await call({ action: 'get' }); }
+  catch (e) { db.local = prev; persist(); setSync('off'); toast('Collegamento non riuscito: ' + e.message); return; }
+  delete db.local.pendingKey; persist();
+  toast('Collegato a Google Drive ✓');
+  await sync();
+  if (ui.view === 'settings') viewSettings();
+}
+function readSyncLink() {
+  const m = location.hash.match(/sync=([\w-]+)/); if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  try { const { u, k } = JSON.parse(b64dec(m[1])); ui.view = 'settings'; connect(u, k); } catch { toast('Link di collegamento non valido'); }
+}
+function syncScript(key) {
+  return `// Expenses: sincronizzazione su Google Drive. Incolla tutto in un nuovo progetto su script.google.com
+// e pubblicalo come App web (Esegui come: Me, Chi ha accesso: Chiunque).
+const KEY = '${key}'; // chiave segreta: non condividerla
+const FILE = 'expenses-sync.json';
+const BACKUP_FOLDER = 'Expenses backup';
+
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
   try {
-    const f = await findDriveFile(); if (!f) return toast('Nessun backup trovato su Drive');
-    importData(await (await gfetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).json());
-  } catch (e) { toast('Ripristino non riuscito: ' + e.message); }
+    const body = JSON.parse(e.postData.contents);
+    if (body.key !== KEY) return out_({ error: 'unauthorized' });
+    const props = PropertiesService.getScriptProperties();
+    const updated = Number(props.getProperty('updated') || 0);
+    const file = file_();
+    if (body.action === 'get') {
+      return out_({ data: file ? JSON.parse(file.getBlob().getDataAsString()) : null, updated: updated });
+    }
+    if (body.action === 'put') {
+      if ((body.base || 0) !== updated) return out_({ conflict: true, updated: updated });
+      const text = JSON.stringify(body.data);
+      if (file) file.setContent(text); else DriveApp.createFile(FILE, text, 'application/json');
+      const now = Date.now();
+      props.setProperty('updated', String(now));
+      dailyBackup_(text);
+      return out_({ ok: true, updated: now });
+    }
+    return out_({ error: 'azione sconosciuta' });
+  } finally {
+    lock.releaseLock();
+  }
 }
+
+function doGet() { return out_({ ok: true, app: 'expenses-sync' }); }
+
+function file_() {
+  const it = DriveApp.getFilesByName(FILE);
+  return it.hasNext() ? it.next() : null;
+}
+
+// una copia al giorno nella cartella "Expenses backup", tiene gli ultimi 60 giorni
+function dailyBackup_(text) {
+  const folders = DriveApp.getFoldersByName(BACKUP_FOLDER);
+  const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(BACKUP_FOLDER);
+  const name = 'expenses-' + Utilities.formatDate(new Date(), 'Europe/Rome', 'yyyy-MM-dd') + '.json';
+  const same = folder.getFilesByName(name);
+  if (same.hasNext()) same.next().setContent(text); else folder.createFile(name, text, 'application/json');
+  const files = [];
+  const all = folder.getFiles();
+  while (all.hasNext()) files.push(all.next());
+  files.sort(function (a, b) { return b.getName().localeCompare(a.getName()); });
+  files.slice(60).forEach(function (f) { f.setTrashed(true); });
+}
+
+function out_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+`;
+}
+
 
 // ---------- Modulo movimento ----------
 let editing = null, kind = 'expense', selCat = 'groceries', lastExpenseCat = null;
@@ -588,16 +739,17 @@ $('#fName').onchange = () => { // suggerisce la categoria più usata con questo 
   if (best) { selCat = best[0]; renderCats(); }
 };
 $('#fCancel').onclick = () => $('#txDialog').close();
+$('#txDialog').addEventListener('close', () => { if (pendingRender) { pendingRender = false; render(); } });
 $('#txDialog').addEventListener('click', e => { if (e.target === $('#txDialog')) $('#txDialog').close(); });
 $('#fDelete').onclick = () => {
-  if (editing && confirm('Eliminare questo movimento?')) { db.transactions = db.transactions.filter(t => t !== editing); save(); $('#txDialog').close(); toast('Movimento eliminato'); render(); }
+  if (editing && confirm('Eliminare questo movimento?')) { db.transactions = db.transactions.filter(t => t !== editing); db.deleted[editing.id] = Date.now(); save(); $('#txDialog').close(); toast('Movimento eliminato'); render(); }
 };
 $('#txForm').onsubmit = e => {
   e.preventDefault();
   const v = parseNum($('#fAmount').value);
   if (!v) { $('#fAmount').focus(); return toast('Inserisci un importo'); }
   const positive = kind === 'income' || $('#fRefund').checked;
-  const data = { date: $('#fDate').value, category: selCat, name: $('#fName').value.trim(), amount: Math.round((positive ? Math.abs(v) : -Math.abs(v)) * 100) / 100 };
+  const data = { date: $('#fDate').value, category: selCat, name: $('#fName').value.trim(), amount: Math.round((positive ? Math.abs(v) : -Math.abs(v)) * 100) / 100, updated: Date.now() };
   if (editing) Object.assign(editing, data); else db.transactions.push({ id: uid(), created: Date.now(), ...data });
   if (kind === 'expense') lastExpenseCat = selCat;
   save(); $('#txDialog').close(); toast(editing ? 'Movimento aggiornato' : 'Salvato ✓'); render();
@@ -616,8 +768,17 @@ $('#main').addEventListener('click', e => {
 document.addEventListener('keydown', e => { if (e.key === 'n' && !e.ctrlKey && !e.metaKey && !e.target.closest('input,select,textarea,dialog')) { e.preventDefault(); openTx(); } });
 
 // Avvio
-save(); // salva subito l'eventuale migrazione
-try { localStorage.removeItem(OLD_KEY); } catch {}
+if (persist()) try { localStorage.removeItem(OLD_KEY); } catch {} // salva subito l'eventuale migrazione
 runRecurring();
+readSyncLink();
 render();
+setSync(db.local.syncUrl ? 'ok' : 'off');
+if (db.local.syncUrl) sync();
+// sincronizza quando torni sull'app, quando torna la rete e ogni 2 minuti mentre è aperta
+addEventListener('online', () => scheduleSync(200));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && Date.now() - (db.local.lastSync || 0) > 10000) scheduleSync(200);
+  if (document.visibilityState === 'hidden' && syncTimer) sync(); // salva subito le modifiche in sospeso
+});
+setInterval(() => { if (document.visibilityState === 'visible') scheduleSync(0); }, 120000);
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
