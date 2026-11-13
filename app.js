@@ -270,7 +270,7 @@ function short(v) { return v >= 1000 ? (v / 1000).toLocaleString('it-IT', { maxi
 
 // ---------- Viste ----------
 function render() {
-  hideTip();
+  hideTip(); pendingRender = false;
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.view === (ui.view === 'loan' ? 'loans' : ui.view)));
   $('#fab').style.display = ['home', 'list', 'budget'].includes(ui.view) ? '' : 'none';
   updateLoanBadge();
@@ -437,11 +437,12 @@ function viewBudget() {
   });
   $('#incTarget').onchange = e => { const v = parseNum(e.target.value); if (v) db.settings.incomeTarget = v; else delete db.settings.incomeTarget; db.stamps.incomeTarget = Date.now(); save(); viewBudget(); };
   document.querySelectorAll('[data-rec]').forEach(row => {
-    const r = db.recurring.find(x => x.id === row.dataset.rec);
+    const id = row.dataset.rec, cur = () => db.recurring.find(x => x.id === id);
     row.querySelectorAll('[data-f]').forEach(el => {
       const f = el.dataset.f;
-      if (f === 'toggle') el.onclick = () => { r.active = !r.active; r.updated = Date.now(); if (r.active) r.lastGenerated = ym(new Date()); save(); viewBudget(); };
+      if (f === 'toggle') el.onclick = () => { const r = cur(); if (!r) return viewBudget(); r.active = !r.active; r.updated = Date.now(); if (r.active) r.lastGenerated = ym(new Date()); save(); viewBudget(); };
       else el.onchange = () => {
+        const r = cur(); if (!r) return viewBudget();
         r.updated = Date.now();
         if (f === 'name' && !el.value.trim()) { if (confirm(`Eliminare la spesa ricorrente "${r.name}"? I movimenti già registrati restano.`)) { db.recurring = db.recurring.filter(x => x !== r); db.deleted[r.id] = Date.now(); } }
         else if (f === 'amount') { const v = parseNum(el.value); if (v) r.amount = -Math.abs(v); }
@@ -804,6 +805,20 @@ function sync() {
   syncRun = doSync().finally(() => { syncRun = null; if (syncQueued) { syncQueued = false; scheduleSync(300); } });
   return syncRun;
 }
+/** Riusa gli oggetti già in memoria (aggiornandone i campi), così le schermate aperte continuano a modificare quelli giusti */
+function keepIdentity(localArr, mergedArr) {
+  const byId = new Map(localArr.map(o => [o.id, o]));
+  return mergedArr.map(m => {
+    const o = byId.get(m.id);
+    if (!o || o === m) return m;
+    for (const k of Object.keys(o)) if (!(k in m)) delete o[k];
+    return Object.assign(o, m);
+  });
+}
+/** Ridisegna, ma non mentre stai scrivendo in un campo o hai aperto il modulo di un movimento */
+const typing = () => { const a = document.activeElement; return !!a && a.matches('#main input, #main select, #main textarea'); };
+function renderWhenIdle() { if ($('#txDialog').open || typing()) pendingRender = true; else render(); }
+document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !$('#txDialog').open && !typing()) { pendingRender = false; render(); } }, 0));
 async function doSync() {
   clearTimeout(syncTimer); setSync('busy');
   try {
@@ -811,7 +826,11 @@ async function doSync() {
     for (let attempt = 0; attempt < 4; attempt++) {
       const r = await call({ action: 'get' });
       const before = JSON.stringify(payload(db));
-      if (r.data) Object.assign(db, mergeData(db, r.data));
+      if (r.data) {
+        const m = mergeData(db, r.data);
+        for (const k of ['transactions', 'recurring', 'loans']) m[k] = keepIdentity(db[k] || [], m[k]);
+        Object.assign(db, m);
+      }
       if (JSON.stringify(payload(db)) !== before) { changed = true; runRecurring(true); }
       persist();
       const out = payload(db);
@@ -820,11 +839,11 @@ async function doSync() {
       if (!p.conflict) { db.local.remoteCount = out.transactions.length; break; } // altrimenti un altro dispositivo ha salvato nel frattempo: riunisco e riprovo
     }
     db.local.lastSync = Date.now(); persist(); setSync('ok');
-    if (changed || ui.view === 'settings') { if ($('#txDialog').open) pendingRender = true; else render(); }
+    if (changed || ui.view === 'settings') renderWhenIdle();
     return { ok: true };
   } catch (e) {
     setSync('error', e.message);
-    if (ui.view === 'settings' && !$('#txDialog').open) render();
+    if (ui.view === 'settings') renderWhenIdle();
     return { ok: false, error: e.message };
   }
 }
