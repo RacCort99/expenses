@@ -40,7 +40,7 @@ const cat = k => CATS[k] || CATS.other;
 const gcolor = k => GROUPS[cat(k).g].color;
 
 // ---------- Stato ----------
-const APP_VERSION = 8; // aumentala insieme a VERSION in sw.js
+const APP_VERSION = 9; // aumentala insieme a VERSION in sw.js
 const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 5;
 // deleted: id → quando è stato cancellato; stamps: quando sono cambiati budget/entrate; local: impostazioni di questo dispositivo (non sincronizzate)
 const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], loans: [], funds: [], settings: {}, deleted: {}, stamps: {}, local: {} });
