@@ -315,3 +315,38 @@ h2.sec { margin: 22px 2px 10px; font-size: .78rem; text-transform: uppercase; le
 .rec2.off { opacity: .5; }
 .dlg-head h2 { flex: 1; font-size: 1.15rem; }
 dialog select { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; color: var(--ink); font-size: 1rem; width: 100%; }
+
+/* ---------- risparmi ---------- */
+.hero-btn { background: rgba(255,255,255,.35) !important; border: 0 !important; color: var(--accent-ink) !important; }
+.hero .meta { align-items: center; }
+.hero-share { margin: 14px 0 0; height: 12px; position: relative; z-index: 1; }
+.est { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.est div { background: var(--bg); border-radius: 12px; padding: 10px 12px; }
+.est span, .est small { display: block; font-size: .75rem; color: var(--muted); }
+.est b { display: block; font-size: 1.1rem; margin: 2px 0; }
+
+.note.bad { color: var(--bad); }
+.sec-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 22px 2px 10px; }
+.sec-row h2.sec { margin: 0; }
+.fund { display: grid; gap: 8px; border-top: 3px solid var(--fc); }
+.fh { display: flex; align-items: center; gap: 10px; }
+.fh .emo { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-size: 1.2rem; flex: none; }
+.fn { flex: 1; min-width: 0; }
+.fn b { display: block; font-size: 1.02rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fn span { display: block; font-size: .78rem; color: var(--muted); }
+.fh .x { border: 0; background: none; width: 34px; height: 34px; border-radius: 10px; }
+.fh .x:hover { background: var(--accent-soft); }
+.famt b { font-size: 1.4rem; letter-spacing: -.02em; }
+.famt small { color: var(--muted); }
+.factions { display: flex; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.factions .btn:disabled { opacity: .4; cursor: default; }
+.sugg { display: grid; grid-template-columns: 36px 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.sugg:last-child { border-bottom: 0; }
+.sugg .emo { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; background: var(--accent-soft); }
+.sugg .mid b { display: block; font-weight: 600; }
+.sugg .mid .s { display: block; font-size: .78rem; color: var(--muted); }
+.row-emo { display: grid; grid-template-columns: 70px 1fr; gap: 10px; }
+.row-emo input#fdEmo { text-align: center; font-size: 1.3rem; padding: 6px; }
+/* sei voci nel menu del telefono */
+@media (max-width: 899px) { .nav button { font-size: .66rem; letter-spacing: -.01em; } .nav svg { width: 21px; height: 21px; } }
+.hero-share span.free { background: rgba(255,255,255,.4) !important; }

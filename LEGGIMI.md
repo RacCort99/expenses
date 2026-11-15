@@ -64,6 +64,18 @@ Nella sezione **Prestiti** tieni traccia dei debiti (soldi che devi restituire) 
 - Se attivi **Registra le rate tra le spese**, ogni rata segnata crea anche un movimento (categoria *Prestiti & Rate* per i debiti, *Altre entrate* per i crediti). Attenzione a non avere anche una spesa ricorrente per la stessa rata, altrimenti la conti due volte.
 - Il numero rosso sull'icona Prestiti indica le rate scadute non ancora segnate.
 
+## 6. Risparmi
+
+Nella sezione **Risparmi** inserisci quanto hai sul conto risparmi e lo dividi in **fondi**, uno per ogni cosa per cui metti da parte (emergenze, viaggi, regali, auto…).
+
+- **Aggiorna saldo**: scrivi quanto c'è adesso sul conto. Quello che non è assegnato a nessun fondo compare come **Liberi**.
+- **Fondo**: nome, obiettivo e mese entro cui ti servono i soldi. L'app calcola quanto mettere da parte al mese per arrivarci.
+- **+ Metti da parte** sposta soldi liberi nel fondo. Se sono soldi nuovi che versi sul conto, spunta la casella e aumenta anche il saldo.
+- **− Usa** toglie soldi dal fondo e dal saldo; se vuoi, li registra anche come spesa.
+- **⚡ Distribuisci** riempie in automatico i fondi con i soldi liberi, partendo dalle scadenze più vicine.
+- **Stima**: quanto puoi mettere da parte al mese (entrate medie − spese variabili medie − spese fisse ricorrenti attive), se basta per i tuoi obiettivi e quanto avrai tra 6 e 12 mesi.
+- **Suggerimenti**: fondi proposti in base a quanto hai speso negli ultimi 12 mesi in viaggi, regali, auto…, più un fondo emergenza pari a 3 mesi di spese.
+
 ## Aggiornare l'app
 
-Dopo aver modificato i file, cambia `VERSION` in `sw.js`, così i dispositivi scaricano la versione nuova.
+Dopo aver modificato i file, cambia `VERSION` in `sw.js` e `APP_VERSION` in `app.js`, così i dispositivi scaricano la versione nuova.

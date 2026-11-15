@@ -23,6 +23,8 @@
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l5 5"/></svg><span>Budget</span></button>
       <button data-view="loans">
         <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h4"/></svg><span>Prestiti</span><i id="loanBadge" hidden></i></button>
+      <button data-view="savings">
+        <svg viewBox="0 0 24 24"><path d="M5 11a7 6 0 0 1 13-2h1.5a1.5 1.5 0 0 1 0 3H19a7 6 0 0 1-3 4.5V19h-3v-1.6a8 8 0 0 1-2 0V19H8v-2.4A6 6 0 0 1 5 11z"/><path d="M10 7.5h4"/><circle cx="14.5" cy="10.5" r=".6"/></svg><span>Risparmi</span></button>
       <button data-view="settings">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg><span>Impostazioni</span><i id="syncDot" data-s="off" aria-hidden="true"></i></button>
     </nav>
@@ -72,6 +74,40 @@
         <span class="grow"></span>
         <button type="submit" class="primary">Salva</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="fundDialog">
+    <form id="fundForm" method="dialog">
+      <div class="dlg-head"><h2 id="fdTitle">Fondo</h2><button type="button" class="icon-btn" id="fdClose" aria-label="Chiudi">✕</button></div>
+      <div class="row-emo">
+        <label>Icona <input id="fdEmo" maxlength="4" autocomplete="off"></label>
+        <label>Nome <input id="fdName" autocomplete="off" placeholder="es. Viaggio in Giappone"></label>
+      </div>
+      <div class="row2">
+        <label>Obiettivo € <input id="fdTarget" inputmode="decimal" autocomplete="off" placeholder="facoltativo"></label>
+        <label>Entro il mese <input id="fdDue" type="month"></label>
+      </div>
+      <div class="row2">
+        <label>Già messi da parte € <input id="fdAlloc" inputmode="decimal" autocomplete="off" placeholder="0"></label>
+        <label>Categoria di spesa <select id="fdCat"></select></label>
+      </div>
+      <p class="note" style="margin:-4px 0 0">Con obiettivo e mese, l'app calcola quanto mettere da parte ogni mese.</p>
+      <div class="actions">
+        <button type="button" class="danger" id="fdDelete">Elimina</button>
+        <span class="grow"></span>
+        <button type="submit" class="primary">Salva</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="amtDialog">
+    <form id="amtForm" method="dialog">
+      <div class="dlg-head"><h2 id="amtTitle">Importo</h2><button type="button" class="icon-btn" id="amtClose" aria-label="Chiudi">✕</button></div>
+      <p class="note" id="amtHint" style="margin:-6px 0 0"></p>
+      <label class="amount"><span>€</span><input id="amtInput" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+      <label class="check" id="amtCheckWrap"><input type="checkbox" id="amtCheck"> <span id="amtCheckLabel"></span></label>
+      <div class="actions"><span class="grow"></span><button type="submit" class="primary">Conferma</button></div>
     </form>
   </dialog>
 

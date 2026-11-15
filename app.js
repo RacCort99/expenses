@@ -40,10 +40,10 @@ const cat = k => CATS[k] || CATS.other;
 const gcolor = k => GROUPS[cat(k).g].color;
 
 // ---------- Stato ----------
-const APP_VERSION = 7; // aumentala insieme a VERSION in sw.js
-const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 4;
+const APP_VERSION = 8; // aumentala insieme a VERSION in sw.js
+const KEY = 'expenses-v1', OLD_KEY = 'gruzzolo-v1', DATA_VERSION = 5;
 // deleted: id → quando è stato cancellato; stamps: quando sono cambiati budget/entrate; local: impostazioni di questo dispositivo (non sincronizzate)
-const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], loans: [], settings: {}, deleted: {}, stamps: {}, local: {} });
+const blank = () => ({ version: DATA_VERSION, transactions: [], budgets: {}, recurring: [], loans: [], funds: [], settings: {}, deleted: {}, stamps: {}, local: {} });
 let db = load();
 const ui = { view: 'home', month: ym(new Date()), q: '', cat: '', listMonth: '', limit: 200 };
 
@@ -97,6 +97,7 @@ function migrate(d) {
     d.settings = s; d.deleted ||= {}; d.stamps ||= {}; d.local ||= {}; d.version = 3;
   }
   if (d.version < 4) { d.loans ||= []; d.version = 4; }
+  if (d.version < 5) { d.funds ||= []; d.version = 5; }
   return d;
 }
 function migrateV2(d) {
@@ -275,7 +276,7 @@ function render() {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.view === (ui.view === 'loan' ? 'loans' : ui.view)));
   $('#fab').style.display = ['home', 'list', 'budget'].includes(ui.view) ? '' : 'none';
   updateLoanBadge();
-  ({ home: viewHome, list: viewList, budget: viewBudget, loans: viewLoans, loan: viewLoan, settings: viewSettings })[ui.view]();
+  ({ home: viewHome, list: viewList, budget: viewBudget, loans: viewLoans, loan: viewLoan, savings: viewSavings, settings: viewSettings })[ui.view]();
 }
 const monthNav = () => `<div class="month-nav"><button data-mnav="-1" aria-label="Mese precedente">‹</button><span>${monthLabel(ui.month)}</span><button data-mnav="1" aria-label="Mese successivo">›</button></div>`;
 
@@ -716,8 +717,8 @@ function importData(d) {
   const n = d.transactions.length;
   if (db.transactions.length && !confirm(`Sostituire i ${db.transactions.length} movimenti di questo dispositivo con i ${n} del file?` + (db.local.syncUrl ? '\n\nCon la sincronizzazione attiva, i movimenti presenti su Drive verranno poi uniti a questi.' : ''))) return;
   const local = db.local;
-  db = migrate({ ...blank(), transactions: d.transactions, budgets: d.budgets || {}, recurring: d.recurring || [], loans: d.loans || [], settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {}, version: d.version || 1 });
-  db.local = local; db.stamps.budgets = db.stamps.incomeTarget = Date.now(); // l'import esplicito vince sui budget remoti
+  db = migrate({ ...blank(), transactions: d.transactions, budgets: d.budgets || {}, recurring: d.recurring || [], loans: d.loans || [], funds: d.funds || [], settings: { incomeTarget: d.settings?.incomeTarget, savings: d.settings?.savings }, deleted: d.deleted || {}, stamps: d.stamps || {}, version: d.version || 1 });
+  db.local = local; db.stamps.budgets = db.stamps.incomeTarget = db.stamps.savings = Date.now(); // l'import esplicito vince sui budget remoti
   save(); runRecurring(); toast(`Importati ${n} movimenti`); ui.view = 'home'; render();
 }
 
@@ -749,7 +750,7 @@ async function call(body) {
 /** I dati che viaggiano su Drive (senza le impostazioni locali), in ordine stabile per poterli confrontare */
 function payload(d) {
   const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  return { version: DATA_VERSION, transactions: [...(d.transactions || [])].sort(byId), recurring: [...(d.recurring || [])].sort(byId), loans: [...(d.loans || [])].sort(byId), budgets: d.budgets || {}, settings: { incomeTarget: d.settings?.incomeTarget }, deleted: d.deleted || {}, stamps: d.stamps || {} };
+  return { version: DATA_VERSION, transactions: [...(d.transactions || [])].sort(byId), recurring: [...(d.recurring || [])].sort(byId), loans: [...(d.loans || [])].sort(byId), funds: [...(d.funds || [])].sort(byId), budgets: d.budgets || {}, settings: { incomeTarget: d.settings?.incomeTarget, savings: d.settings?.savings }, deleted: d.deleted || {}, stamps: d.stamps || {} };
 }
 /** Unisce i dati di due dispositivi: per ogni movimento vince la modifica più recente, le cancellazioni valgono per tutti */
 function mergeData(a, b) {
@@ -771,9 +772,10 @@ function mergeData(a, b) {
   const newer = (k, va, vb, empty) => (sa[k] || 0) > (sb[k] || 0) ? va : (sb[k] || 0) > (sa[k] || 0) ? vb : (empty(va) ? vb : va);
   const budgets = newer('budgets', a.budgets, b.budgets, v => !v || !Object.keys(v).length);
   const incomeTarget = newer('incomeTarget', a.settings?.incomeTarget, b.settings?.incomeTarget, v => v == null);
+  const savings = newer('savings', a.settings?.savings, b.settings?.savings, v => v == null);
   return {
-    transactions, recurring, loans: pick(a.loans, b.loans), budgets: { ...budgets }, settings: { ...a.settings, incomeTarget }, deleted: del,
-    stamps: { budgets: Math.max(sa.budgets || 0, sb.budgets || 0), incomeTarget: Math.max(sa.incomeTarget || 0, sb.incomeTarget || 0) },
+    transactions, recurring, loans: pick(a.loans, b.loans), funds: pick(a.funds, b.funds), budgets: { ...budgets }, settings: { ...a.settings, incomeTarget, savings }, deleted: del,
+    stamps: { budgets: Math.max(sa.budgets || 0, sb.budgets || 0), incomeTarget: Math.max(sa.incomeTarget || 0, sb.incomeTarget || 0), savings: Math.max(sa.savings || 0, sb.savings || 0) },
   };
 }
 let syncRun = null;
@@ -807,7 +809,7 @@ async function doSync() {
       const before = JSON.stringify(payload(db));
       if (r.data) {
         const m = mergeData(db, r.data);
-        for (const k of ['transactions', 'recurring', 'loans']) m[k] = keepIdentity(db[k] || [], m[k]);
+        for (const k of ['transactions', 'recurring', 'loans', 'funds']) m[k] = keepIdentity(db[k] || [], m[k]);
         Object.assign(db, m);
       }
       if (JSON.stringify(payload(db)) !== before) { changed = true; runRecurring(true); }
@@ -913,6 +915,209 @@ function out_(obj) {
 `;
 }
 
+
+// ---------- Risparmi ----------
+// settings.savings = { balance, at }  (saldo del conto risparmi, inserito a mano)
+// funds: [{ id, name, emo, target, due: 'YYYY-MM' | '', allocated, category, updated }]
+const FUND_COLORS = ['#f59e0b', '#0d9488', '#2563eb', '#db2777', '#7c3aed', '#16a34a', '#ea580c', '#0891b2', '#b45309', '#64748b'];
+const fundColor = f => FUND_COLORS[Math.abs([...f.id].reduce((a, c) => a * 31 + c.charCodeAt(0) | 0, 7)) % FUND_COLORS.length];
+const monthsUntil = due => { if (!due) return null; const [y, m] = due.split('-').map(Number), n = new Date(); return (y * 12 + m) - (n.getFullYear() * 12 + n.getMonth() + 1); };
+const dueLabel = due => due ? new Date(+due.slice(0, 4), +due.slice(5, 7) - 1, 1).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }) : '';
+function fundNeed(f) { // quanto mettere da parte al mese per arrivare all'obiettivo in tempo
+  if (!f.target || f.allocated >= f.target) return 0;
+  const n = monthsUntil(f.due);
+  return n == null ? 0 : (f.target - f.allocated) / Math.max(n, 1);
+}
+/** Risparmio mensile stimato = entrate medie − spese variabili medie − spese fisse attuali.
+ *  Le spese fisse si prendono dalle ricorrenti attive (non dai mesi passati, dove spesso mancano). */
+const FIXED_CATS = ['housing', 'utilities', 'loans', 'subscriptions'];
+function avgSaving() {
+  const ms = refMonths(ym(new Date()), 6).filter(m => summary(m).income > 0);
+  if (!ms.length) return null;
+  const s = ms.map(summary), n = ms.length;
+  const income = s.reduce((a, x) => a + x.income, 0) / n;
+  const variable = s.reduce((a, x) => a + EXPENSE_CATS.filter(k => !FIXED_CATS.includes(k)).reduce((b, k) => b + (x.byCat[k] || 0), 0), 0) / n;
+  const recFixed = -db.recurring.filter(r => r.active).reduce((a, r) => a + r.amount, 0);
+  const pastFixed = s.reduce((a, x) => a + FIXED_CATS.reduce((b, k) => b + (x.byCat[k] || 0), 0), 0) / n;
+  const fixed = Math.max(recFixed, pastFixed); // la più alta delle due: meglio una stima prudente
+  return { months: n, income, variable, fixed, expense: variable + fixed, saved: income - variable - fixed };
+}
+/** Spese irregolari degli ultimi 12 mesi → fondi suggeriti */
+function fundSuggestions() {
+  const cur = ym(new Date()), months = Array.from({ length: 12 }, (_, i) => addMonths(cur, -i - 1));
+  const year = {}; for (const m of months) for (const [k, v] of Object.entries(summary(m).byCat)) year[k] = (year[k] || 0) + v;
+  const linked = new Set(db.funds.map(f => f.category).filter(Boolean));
+  const names = { travel: 'Viaggi', gifts: 'Regali', car: 'Auto (assicurazione, bollo, manutenzione)', health: 'Salute', shopping: 'Acquisti importanti' };
+  const out = Object.keys(names).filter(k => !linked.has(k) && (year[k] || 0) >= 150)
+    .map(k => ({ key: k, name: names[k], emo: cat(k).emo, category: k, yearly: year[k], monthly: year[k] / 12 }));
+  const avg = avgSaving();
+  if (avg && !db.funds.some(f => /emergen/i.test(f.name))) out.unshift({ key: 'emergency', name: 'Fondo emergenza', emo: '🛟', category: '', target: Math.round(avg.expense * 3 / 100) * 100, monthly: 0 });
+  return out;
+}
+function savingsState() {
+  const sv = db.settings.savings || {}, balance = +sv.balance || 0;
+  const allocated = db.funds.reduce((a, f) => a + (+f.allocated || 0), 0);
+  return { has: sv.balance != null, balance, at: sv.at, allocated, free: balance - allocated };
+}
+function setBalance(v) { db.settings.savings = { balance: Math.round(v * 100) / 100, at: Date.now() }; db.stamps.savings = Date.now(); }
+
+function viewSavings() {
+  const st = savingsState(), avg = avgSaving(), funds = [...db.funds].sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || a.name.localeCompare(b.name));
+  const need = funds.reduce((a, f) => a + fundNeed(f), 0);
+  const seg = funds.filter(f => f.allocated > 0).map(f => `<span style="flex:${f.allocated};background:${fundColor(f)}" data-tip="${esc(`<b>${esc(f.name)}</b><br>${money(f.allocated, true)}`)}"></span>`).join('')
+    + (st.free > 0 ? `<span class="free" style="flex:${st.free}" data-tip="${esc(`<b>Liberi</b><br>${money(st.free, true)}`)}"></span>` : '');
+  const card = f => {
+    const c = fundColor(f), pct = f.target ? Math.min(f.allocated / f.target, 1) : null, n = fundNeed(f), mLeft = monthsUntil(f.due);
+    const done = f.target && f.allocated >= f.target;
+    const meta = done ? '<b class="pos">Obiettivo raggiunto 🎉</b>'
+      : f.target && f.due ? (mLeft < 0 ? `<b class="bad">Scaduto a ${dueLabel(f.due)}</b>` : `<b>${money(n, true)}/mese</b> fino a ${dueLabel(f.due)}`)
+      : f.target ? `mancano ${money(f.target - f.allocated, true)}` : 'senza obiettivo';
+    return `<div class="card fund" style="--fc:${c}">
+      <div class="fh"><span class="emo" style="background:${c}22">${esc(f.emo || '💰')}</span>
+        <div class="fn"><b>${esc(f.name)}</b><span>${f.category ? cat(f.category).label : 'Fondo'}${f.due ? ' · entro ' + dueLabel(f.due) : ''}</span></div>
+        <button class="x" data-fedit="${f.id}" aria-label="Modifica ${esc(f.name)}">✏️</button></div>
+      <div class="famt num"><b>${money(f.allocated, true)}</b>${f.target ? ` <small>di ${money(f.target, true)}</small>` : ''}</div>
+      ${pct != null ? `<div class="lbar"><i style="width:${pct * 100}%;background:${c}"></i></div>` : ''}
+      <div class="lmeta"><span>${pct != null ? Math.round(pct * 100) + '%' : ''}</span><span>${meta}</span></div>
+      <div class="factions"><button class="btn sm" data-fadd="${f.id}">+ Metti da parte</button><button class="btn sm" data-fuse="${f.id}" ${f.allocated > 0 ? '' : 'disabled'}>− Usa</button></div>
+    </div>`;
+  };
+  const sugg = fundSuggestions();
+  let est = '';
+  if (avg) {
+    const diff = avg.saved - need;
+    est = `<div class="est">
+      <div><span>Puoi mettere da parte circa</span><b class="num ${avg.saved >= 0 ? 'pos' : 'bad'}">${money(avg.saved, true)}/mese</b><small>entrate ${money(avg.income, true)} − variabili ${money(avg.variable, true)} − fisse ${money(avg.fixed, true)}</small></div>
+      <div><span>I tuoi obiettivi richiedono</span><b class="num">${money(need, true)}/mese</b><small>${funds.filter(f => fundNeed(f) > 0).length} fondi con scadenza</small></div>
+      <div><span>Tra 6 mesi</span><b class="num">~${money(st.balance + avg.saved * 6, true)}</b><small>tra 12 mesi ~${money(st.balance + avg.saved * 12, true)}</small></div>
+    </div>
+    <p class="note ${diff >= 0 ? '' : 'bad'}">${need === 0 ? 'Aggiungi un obiettivo con una scadenza a un fondo per sapere quanto mettere da parte ogni mese.'
+      : diff >= 0 ? `✓ Ci stai dentro: dopo gli obiettivi ti avanzano circa <b>${money(diff, true)}/mese</b>.`
+      : `⚠️ Ti mancano circa <b>${money(-diff, true)}/mese</b>: allunga qualche scadenza, riduci un obiettivo o taglia una categoria di spesa.`}</p>
+    <p class="note">Entrate e spese variabili sono la media degli ultimi ${avg.months} mesi; le spese fisse sono quelle ricorrenti attive in Budget. Se hai rate o spese fisse che non sono lì, aggiungile per una stima più giusta.</p>`;
+  } else est = `<p class="note">Registra le entrate (lo stipendio) per qualche mese e qui vedrai quanto risparmi in media e quanto avrai tra 6 e 12 mesi.</p>`;
+
+  $('#main').innerHTML = `
+    <div class="head"><h1>Risparmi</h1></div>
+    <div class="grid wide-left two">
+      <div class="card hero">
+        <div class="lbl">Sul conto risparmi</div>
+        <div class="big num">${st.has ? money(st.balance) : '—'}</div>
+        <div class="meta"><span>${st.has ? 'aggiornato ' + ago(st.at) : 'inserisci il saldo per iniziare'}</span><button class="btn sm hero-btn" id="svBal">${st.has ? '✏️ Aggiorna saldo' : 'Inserisci saldo'}</button></div>
+        ${st.has ? `<div class="share hero-share">${seg}</div>
+        <div class="hero-stats"><div><span>Assegnati ai fondi</span><b class="num">${money(st.allocated, true)}</b></div><div><span>${st.free >= 0 ? 'Liberi' : 'Assegnati in più'}</span><b class="num">${money(Math.abs(st.free), true)}</b></div></div>` : ''}
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Stima</h2></div>
+        ${est}
+      </div>
+    </div>
+    ${st.has && st.free < -0.005 ? `<p class="note bad section">Hai assegnato ai fondi ${money(-st.free)} in più di quello che c'è sul conto: aggiorna il saldo o togli soldi da qualche fondo.</p>` : ''}
+    <div class="sec-row"><h2 class="sec">I tuoi fondi</h2><span class="grow"></span>
+      ${st.free > 0.5 && funds.some(f => f.target && f.allocated < f.target) ? `<button class="btn sm" id="svDist">⚡ Distribuisci i ${money(st.free, true)} liberi</button>` : ''}
+      <button class="btn sm" id="svNew">+ Nuovo fondo</button></div>
+    ${funds.length ? `<div class="grid two">${funds.map(card).join('')}</div>` : `<div class="card empty"><p>Nessun fondo ancora.</p><p>Crea un fondo per ogni cosa per cui metti da parte (viaggi, regali, auto, emergenze…) oppure parti dai suggerimenti qui sotto.</p></div>`}
+    ${sugg.length ? `<h2 class="sec">Suggerimenti dai tuoi dati</h2><div class="card">${sugg.map(s => `<div class="sugg">
+        <span class="emo">${s.emo}</span>
+        <span class="mid"><b>${esc(s.name)}</b><span class="s">${s.key === 'emergency' ? `3 mesi delle tue spese medie: ${money(s.target, true)}` : `negli ultimi 12 mesi ${money(s.yearly, true)} → ${money(s.monthly, true)}/mese`}</span></span>
+        <button class="btn sm" data-sugg="${s.key}">Crea fondo</button></div>`).join('')}</div>` : ''}`;
+
+  $('#svBal').onclick = async () => {
+    const r = await askAmount({ title: 'Saldo del conto risparmi', hint: 'Quanto c\'è adesso sul conto risparmi.', value: st.has ? st.balance : '' });
+    if (r) { setBalance(r.amount); save(); viewSavings(); toast('Saldo aggiornato'); }
+  };
+  $('#svNew').onclick = () => openFund(null);
+  if ($('#svDist')) $('#svDist').onclick = () => {
+    let free = st.free; const plan = [];
+    for (const f of funds.filter(f => f.target && f.allocated < f.target)) { // prima le scadenze più vicine
+      if (free < 0.5) break; const give = Math.min(f.target - f.allocated, free); plan.push([f, give]); free -= give;
+    }
+    if (!plan.length) return;
+    if (!confirm('Distribuire così?\n\n' + plan.map(([f, g]) => `${f.name}: +${money(g)}`).join('\n') + (free > 0.5 ? `\n\nResteranno liberi ${money(free)}.` : ''))) return;
+    for (const [f, g] of plan) { f.allocated = Math.round((f.allocated + g) * 100) / 100; f.updated = Date.now(); }
+    save(); viewSavings(); toast('Soldi distribuiti ✓');
+  };
+  document.querySelectorAll('[data-fedit]').forEach(b => b.onclick = () => openFund(b.dataset.fedit));
+  document.querySelectorAll('[data-fadd]').forEach(b => b.onclick = async () => {
+    const f = db.funds.find(x => x.id === b.dataset.fadd); if (!f) return viewSavings();
+    const fr = savingsState().free;
+    const r = await askAmount({ title: `Metti da parte per ${f.name}`, hint: fr > 0 ? `Liberi sul conto: ${money(fr)}` : 'Non hai soldi liberi sul conto: spunta la casella se li stai versando adesso.', value: fundNeed(f) ? Math.ceil(fundNeed(f)) : '', check: 'Sono soldi nuovi che verso sul conto risparmi (aumenta anche il saldo)', checked: fr <= 0 });
+    if (!r) return;
+    const g = db.funds.find(x => x.id === f.id); if (!g) return viewSavings(); // cercato di nuovo: nel frattempo può essere arrivata una sincronizzazione
+    g.allocated = Math.round((g.allocated + r.amount) * 100) / 100; g.updated = Date.now();
+    if (r.checked) setBalance(savingsState().balance + r.amount);
+    save(); viewSavings(); toast(`+${money(r.amount)} su ${g.name}`);
+  });
+  document.querySelectorAll('[data-fuse]').forEach(b => b.onclick = async () => {
+    const f = db.funds.find(x => x.id === b.dataset.fuse); if (!f) return viewSavings();
+    const r = await askAmount({ title: `Usa da ${f.name}`, hint: `Nel fondo ci sono ${money(f.allocated)}. L'importo esce dal fondo e dal saldo del conto risparmi.`, value: '', check: f.category ? `Registrala anche come spesa (${cat(f.category).label})` : 'Registrala anche come spesa (Altro)', checked: false });
+    if (!r) return;
+    const g = db.funds.find(x => x.id === f.id); if (!g) return viewSavings();
+    const amt = Math.min(r.amount, g.allocated);
+    g.allocated = Math.round((g.allocated - amt) * 100) / 100; g.updated = Date.now();
+    setBalance(Math.max(savingsState().balance - amt, 0));
+    if (r.checked) db.transactions.push({ id: uid(), created: Date.now(), date: today(), category: g.category || 'other', name: g.name, amount: -amt, updated: Date.now() });
+    save(); viewSavings(); toast(`Usati ${money(amt)} da ${g.name}`);
+  });
+  document.querySelectorAll('[data-sugg]').forEach(b => b.onclick = () => {
+    const s = sugg.find(x => x.key === b.dataset.sugg); if (!s) return;
+    const due = s.key === 'emergency' ? '' : addMonths(ym(new Date()), 12);
+    openFund(null, { name: s.name, emo: s.emo, category: s.category, target: s.target || Math.round(s.yearly / 50) * 50, due });
+  });
+}
+
+// finestra "importo" riutilizzabile: restituisce { amount, checked } oppure null
+function askAmount({ title, hint = '', value = '', check = '', checked = false }) {
+  return new Promise(resolve => {
+    const d = $('#amtDialog');
+    $('#amtTitle').textContent = title; $('#amtHint').textContent = hint;
+    $('#amtInput').value = value === '' ? '' : String(value).replace('.', ',');
+    $('#amtCheckWrap').style.display = check ? '' : 'none'; $('#amtCheckLabel').textContent = check; $('#amtCheck').checked = checked;
+    let done = false;
+    const finish = v => { if (done) return; done = true; $('#amtForm').onsubmit = null; d.close(); resolve(v); };
+    $('#amtForm').onsubmit = e => { e.preventDefault(); const v = parseNum($('#amtInput').value); if (!v || v <= 0) { $('#amtInput').focus(); return toast('Inserisci un importo'); } finish({ amount: v, checked: $('#amtCheck').checked }); };
+    $('#amtClose').onclick = () => finish(null);
+    d.onclose = () => finish(null);
+    d.showModal(); setTimeout(() => { $('#amtInput').focus(); $('#amtInput').select(); }, 60);
+  });
+}
+
+// finestra fondo
+let fundEditing = null;
+function openFund(id, preset = {}) {
+  const f = id ? db.funds.find(x => x.id === id) : null;
+  if (id && !f) return viewSavings();
+  fundEditing = id; const v = f || preset;
+  $('#fdTitle').textContent = f ? 'Modifica fondo' : 'Nuovo fondo';
+  $('#fdName').value = v.name || ''; $('#fdEmo').value = v.emo || '💰';
+  $('#fdTarget').value = v.target ? String(v.target).replace('.', ',') : '';
+  $('#fdDue').value = v.due || ''; $('#fdAlloc').value = f ? String(f.allocated).replace('.', ',') : '';
+  $('#fdCat').innerHTML = `<option value="">Nessuna</option>` + EXPENSE_CATS.map(k => `<option value="${k}" ${v.category === k ? 'selected' : ''}>${cat(k).emo} ${cat(k).label}</option>`).join('');
+  $('#fdDelete').style.display = f ? '' : 'none';
+  $('#fundDialog').showModal(); setTimeout(() => $('#fdName').focus(), 60);
+}
+$('#fundForm').onsubmit = e => {
+  e.preventDefault();
+  const name = $('#fdName').value.trim(); if (!name) { $('#fdName').focus(); return toast('Dai un nome al fondo'); }
+  const data = { name, emo: $('#fdEmo').value.trim() || '💰', target: parseNum($('#fdTarget').value) || null, due: $('#fdDue').value || '', category: $('#fdCat').value, allocated: Math.max(parseNum($('#fdAlloc').value) || 0, 0), updated: Date.now() };
+  if (fundEditing) {
+    const f = db.funds.find(x => x.id === fundEditing);
+    if (!f) { $('#fundDialog').close(); toast('Questo fondo è stato eliminato da un altro dispositivo'); return viewSavings(); }
+    Object.assign(f, data);
+  } else db.funds.push({ id: 'f-' + uid(), ...data });
+  $('#fundDialog').close(); save(); viewSavings(); toast('Fondo salvato ✓');
+};
+$('#fdClose').onclick = () => $('#fundDialog').close();
+$('#fdDelete').onclick = () => {
+  const f = db.funds.find(x => x.id === fundEditing); if (!f) return $('#fundDialog').close();
+  if (!confirm(`Eliminare il fondo "${f.name}"? I ${money(f.allocated)} assegnati tornano tra i soldi liberi.`)) return;
+  db.funds = db.funds.filter(x => x !== f); db.deleted[f.id] = Date.now();
+  $('#fundDialog').close(); save(); viewSavings(); toast('Fondo eliminato');
+};
+for (const id of ['#fundDialog', '#amtDialog']) {
+  $(id).addEventListener('click', e => { if (e.target === $(id)) $(id).close(); });
+  $(id).addEventListener('close', () => { if (pendingRender) render(); });
+}
 
 // ---------- Finestra spesa fissa ----------
 let recEditing = null; // id della spesa fissa in modifica (null = nuova)

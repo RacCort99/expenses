@@ -1,5 +1,5 @@
 // Service worker: rende l'app utilizzabile offline. Cambia VERSION quando aggiorni i file.
-const VERSION = 'expenses-v7';
+const VERSION = 'expenses-v8';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 // all'installazione scarica sempre i file freschi, ignorando la cache del browser
 self.addEventListener('install', e => {
